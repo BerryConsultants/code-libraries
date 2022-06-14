@@ -10,5 +10,5 @@ Highlights from this walkthrough include:
 * Prior calibration for a piecewise exponential model
 * Efficient model fitting
 
-Note: the piecewise exponential model can be fitted as a Poisson regression with a reparametrization trick. 
+***Note***: the piecewise exponential model can be fitted as a Poisson regression with a reparametrization trick. 
 However, in practice I have observed that the model fitting procedure proposed here (using the likelihood explicitly) is not only faster but is also mixing better when run with the same number of iterations. 
