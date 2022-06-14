@@ -1,0 +1,1358 @@
+---
+title: "Time to Event Dose Finding Trial"
+subtitle: ""
+author: "Berry Consultants, LLC"
+date: ""
+link-citations: yes
+linkcolor: blue
+bibliography: survival_modeling.bib
+output:
+  bookdown::html_document2:
+    fig_caption: yes
+    theme: flatly # sandstone # spacelab # flatly
+    highlight: pygments
+    toc: TRUE
+    toc_depth: 4
+    number_sections: TRUE
+    toc_float:
+      smooth_scroll: FALSE
+---
+
+```{r setup, include = FALSE, echo = FALSE, results = "hide", message = FALSE, warning = FALSE, error = FALSE}
+knitr::opts_chunk$set(error = FALSE, comment = NA, warning = FALSE, message = FALSE)
+options(knitr.kable.NA = '', knitr.table.format = "html", scipen = 999)
+```
+
+
+
+# Introduction 
+
+
+We consider here a dose-finding trial with a time to event primary endpoint.
+The primary analysis of the primary endpoint is a Bayesian piecewise exponential model [@IbrahimEtAl:2001; @christensen2010bayesian] of the time to event, with an underlying dose-response model to borrow information across the treatment arms.
+For illustration purposes, we consider a trial with a control arm and four active doses.
+
+
+
+```{r fcts, echo = FALSE, results = "hide"}
+source('utils_tte.R')
+key_arms = c('Control', 'Dose 1', 'Dose 2', 'Dose 3', 'Dose 4')
+key_palette = c('black', brewer.pal(9, 'Set1')[1:(length(key_arms) - 1)])
+s_j_true = c(0, 5, 10, 15, 20)
+lambda_true = c(0.06, 0.06, 0.03, 0.03)
+theta_true = log(c(1.5, 2, 2.5, 1.75))
+D = length(theta_true)
+```
+
+
+# Piecewise Constant Proportional Hazard Model
+
+
+Let $T_{i}$ be the event time (for modeling purposes, measured in weeks) for the primary endpoint for the $i^{th}$ patient. 
+Without loss of generality, we can take the initial time after which the event can occur to be $t = 0$ as it is usually done in survival analysis. 
+We also make the more restrictive assumption that the event will always occur so that event times are always finite. 
+In other words, we often assume that event times are distributed across the open time interval $t \in (0, +\infty)$.
+When follow-up for patients is finite, as in this case study, we will assume that $t \in (0, T_{max})$
+
+
+Let us now consider a set of $J$ pre-determined cutpoints that partition the range of the data, i.e. $0 < s_{1} < \dots < s_{J} = T_{max}$.
+These divide the time domain in $J$ intervals $\underbrace{[0, s_{1}]}_{I_{1}}, \underbrace{(s_{1}, s_{2}]}_{I_{2}}, \dots, \underbrace{(s_{J-1}, s_{J}]}_{I_{J}}$.
+
+
+```{r intervals, echo = F, fig.height = 1.25, fig.width = 10}
+ggplot() + 
+  geom_segment(aes(x = s_j_true, y = rep(-0.1, length(s_j_true)), 
+                   xend = s_j_true, yend = rep(0.1, length(s_j_true)))) + 
+  geom_segment(aes(x = 0, y = 0, xend = max(s_j_true), yend = 0), size = 1) + 
+  geom_text(aes(x = s_j_true, y = rep(-0.4, length(s_j_true)),
+                label = TeX(c('0', 
+                              sprintf("$s_{\\%s}$", 1:(length(s_j_true) - 1))), 
+                            output = "character")), 
+            size = 5, parse = TRUE) + 
+  geom_text(aes(x = seq(2.5, 17.5, by = 5), y = rep(0.5, length(s_j_true) - 1),
+                label = TeX(sprintf("$I_{\\%s}$", 1:(length(s_j_true) - 1)), 
+                            output = "character")), 
+            size = 5, parse = TRUE) + 
+  scale_x_continuous(name = '') +
+  scale_y_continuous(name = '', limits = c(-1, 1), expand = c(0, 0)) +
+  theme(text = element_text(size = 16), 
+        axis.line.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        panel.grid.major.y=element_blank(), 
+        axis.line.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.x=element_blank(),
+        panel.grid.minor.x=element_blank(),
+        panel.grid.major.x=element_blank(), 
+        panel.border = element_blank())
+```
+
+
+In our motivating example, we consider $J = `r length(s_j_true) - 1`$ cutpoints $\mathbf{s} = (`r s_j_true[-1]`)$.
+
+
+## Model for Control Hazard Rates
+
+
+In many cases, in survival analysis the occurrence of an event is promoted by the accumulation of some "stimulus". 
+We refer to this stimulus as a hazard.
+A **hazard function**, $\lambda(t)$, quantifies the differential amount of hazard introduced to the system at time $t$. 
+
+
+A relatively simple model considers as baseline hazard (hazard function for the control arm) a constant function on each interval, i.e.
+$$
+\lambda(t) = \lambda_{j} I_{(s_{j-1}, s_{j}]}(t),
+$$
+where $I_{(s_{j-1}, s_{j}]}(t)$ is the indicator function that is equal to $1$ if $t \in (s_{j-1}, s_{j}]$, and $0$ otherwise. 
+
+
+The **cumulative hazard** function 
+$$
+H(t) = \int_{0}^{t} \lambda(s) \ \mathrm{d} s = \sum_{j = 1}^{J} \lambda_{j} \int_{0}^{t} I_{j}(s) \ \mathrm{d} s
+$$
+quantifies the total hazard accumulated up to time $t$.
+
+
+In the survival modeling context, $S(t)$ quantifies the probability that the event occurs anytime after time $t$. 
+This can also be interpreted as the probability that the event does not occur before time $t$, or in other words the probability that it survives until time $t$. 
+Because of this $S(t)$ is referred to as the **survival function**.
+The more hazard that accumulates by a given time the less likely the event should have survived to that time. 
+In other words, the survival function should decay with increasing hazard. 
+Survival models make the particular assumption of an exponential decay,
+$$
+S(t) = \exp \left\{ - \sum_{j = 1}^{J} \lambda_{j} \int_{0}^{t} I_{j}(s) \ \mathrm{d} s \right\}.
+$$
+This expression can be made more explicit, for example, considering an event occurring at $t \in I_{k}$, i.e., $s_{k-1} < t < s_{k}$. 
+Then we have
+\begin{equation}
+S(t) = \exp \left\{ - \sum_{j = 1}^{k-1} \lambda_{j} (s_{j} - s_{j-1}) - \lambda_{k} (t - s_{k-1}) \right\}.
+(\#eq:surv-fct)
+\end{equation}
+In other words, assuming a piecewise constant hazard function is equivalent to assuming a piecewise exponential model for the event time.  
+We will discuss the prior distribution on the parameters $\lambda_{1}, \dots, \lambda_{J}$ in Section \@ref(sec-priors).
+
+
+Continuing our practical example, consider the weekly hazard rates $\mathbf{\lambda} = (`r lambda_true`)$. 
+With this value of $\mathbf{\lambda}$, we can visualize the hazard function, the cumulative hazard function, and the survival function.
+
+
+```{r true_hz_surv_ctr, echo = F, out.width = "49%"}
+t_grid = seq(0, 20, length.out = 500)
+
+ggplot() + 
+  geom_line(aes(x = t_grid, y = ht(t_grid, s_j_true, lambda_true)), col = key_palette[1], size = 2) + 
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$\\lambda(t)$")) + 
+  theme(text = element_text(size = 16))
+
+ggplot() + 
+  geom_line(aes(x = t_grid, y = Ht(t_grid, s_j_true, lambda_true)), col = key_palette[1], size = 2) +
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$H(t)$"), expand = c(0, 0)) + 
+  theme(text = element_text(size = 16))
+
+ggplot() + 
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), col = key_palette[1], size = 2) +
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0)) +
+  theme(text = element_text(size = 16))
+```
+
+
+## Model for Treatment Hazard Rates
+
+
+In the presence of multiple arms, we still model the survival distribution for the event times as piecewise exponential:
+$$T_{i} \sim PE(\boldsymbol \eta_{i}),$$
+where $\boldsymbol \eta_{i} = (\eta_{i1}, \dots, \eta_{iJ})$ represents the set of hazard rates (events per week) within each segment for the $i^{th}$ patient.
+
+
+The hazard rates are modeled as follows:
+$$\eta_{ij} = \lambda_{j} \exp\{ X_{i,d} \theta_{d} \}, \quad j = 1, \dots, J, \ i = 1, \dots, n, \ d = 1, \dots, D,$$
+where $\lambda_{j}$ is the baseline hazard rate for time segment $j$, $\theta_{d}$ is the log hazard ratio (HR) for dose $d$, and $X_{i,d}$ is the treatment indicator variable, where $X_{i,d} = 1$ if patient $i$ is randomized to dose $d$, and zero otherwise.
+We will discuss the prior distribution on the parameters $\theta_{1}, \dots, \theta_{D}$ in Section \@ref(sec-priors).
+
+
+In our example, let us consider $D = `r D`$ doses with hazard ratios $e^{\mathbf{\theta}} = (`r exp(theta_true)`)$.
+
+
+```{r true_hz_surv_trt, echo = F, out.width = "49%"}
+tibble(X = rep(t_grid, length(key_arms)), 
+       y = c(ht(t_grid, s_j_true, lambda_true), 
+             ht(t_grid, s_j_true, exp(theta_true[1]) * lambda_true), 
+             ht(t_grid, s_j_true, exp(theta_true[2]) * lambda_true), 
+             ht(t_grid, s_j_true, exp(theta_true[3]) * lambda_true), 
+             ht(t_grid, s_j_true, exp(theta_true[4]) * lambda_true)), 
+       TRTPN = factor(rep(key_arms, each = length(t_grid)), levels = key_arms)) %>% 
+  ggplot() + 
+  geom_line(aes(x = X, y = y, col = TRTPN), size = 2) + 
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$\\lambda(t)$")) + 
+  scale_color_manual(name = 'Arm', values = key_palette) +
+  theme(legend.position = 'top', text = element_text(size = 16))
+
+tibble(X = rep(t_grid, length(key_arms)), 
+       y = c(Ht(t_grid, s_j_true, lambda_true), 
+             Ht(t_grid, s_j_true, exp(theta_true[1]) * lambda_true), 
+             Ht(t_grid, s_j_true, exp(theta_true[2]) * lambda_true), 
+             Ht(t_grid, s_j_true, exp(theta_true[3]) * lambda_true), 
+             Ht(t_grid, s_j_true, exp(theta_true[4]) * lambda_true)), 
+       TRTPN = factor(rep(key_arms, each = length(t_grid)), levels = key_arms)) %>% 
+  ggplot() + 
+  geom_line(aes(x = X, y = y, col = TRTPN), size = 2) + 
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$H(t)$"), expand = c(0, 0)) + 
+  scale_color_manual(name = 'Arm', values = key_palette) +
+  theme(legend.position = 'top', text = element_text(size = 16))
+
+tibble(X = rep(t_grid, length(key_arms)), 
+       y = c(St(t_grid, s_j_true, lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[1]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[2]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[3]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[4]) * lambda_true)), 
+       TRTPN = factor(rep(key_arms, each = length(t_grid)), levels = key_arms)) %>% 
+  ggplot() + 
+  geom_line(aes(x = X, y = y, col = TRTPN), size = 2) + 
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0)) +
+  scale_color_manual(name = 'Arm', values = key_palette) +
+  theme(legend.position = 'top', text = element_text(size = 16))
+```
+
+
+## Dose Response Model
+
+
+A dose-response model is used to borrow information for the treatment effects across each of the four active doses, leading to increased estimation efficiency. 
+The log hazard ratio (HR) for each dose, $\theta_{d}$, is modeled using a normal dynamic linear model (NDLM), i.e.
+$$
+\theta_{1} \sim \text{N}(0, 1), \quad \theta_{d} \sim \text{N}(\theta_{d-1}, \tau^{2}), \ d = 2, \dots, D,
+$$
+where dose 1 has an independent standard normal prior distribution, and each subsequent dose has a prior distribution centered on the previous dose, with a variance term $\tau^{2}$. 
+
+
+The parameter $\tau^{2}$ controls the degree of smoothing between doses. 
+To visualize its effect, we can repeatedly sample from the NDLM using some fixed values of $\tau^{2}$.
+
+
+```{r dr_curve_samples, echo = F}
+n_sims = 5000
+
+tau = 0.5
+
+theta_prior = array(NA, dim = c(n_sims, D))
+for (i in 1:n_sims) {
+  theta_prior[i,1] = rnorm(1, 0, 1)
+  for (d in 2:D) {
+    theta_prior[i,d] = rnorm(1, theta_prior[i,d-1], tau)
+  }
+}
+
+prior_draws = reshape2::melt(theta_prior, varnames = c('Iteration', 'Dose')) %>% 
+  mutate(TRTPN = factor((key_arms[-1])[Dose], levels = key_arms[-1]))
+summ_stats = prior_draws %>% 
+  group_by(TRTPN) %>% 
+  summarize(mean = mean(value), 
+            LI = quantile(value, probs = 0.025), 
+            UI = quantile(value, probs = 0.975)) 
+
+ggplot() + 
+  geom_line(aes(x = TRTPN, y = value, group = Iteration), alpha = 0.35, data = prior_draws %>% filter(Iteration <= n_sims/50)) +
+  geom_point(aes(x = TRTPN, y = mean, group = 1), col = 'red', size = 3, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = mean, group = 1), col = 'red', size = 1, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = LI, group = 1), lty = 3, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = UI, group = 1), lty = 3, data = summ_stats) +
+  geom_ribbon(aes(x = TRTPN, ymin = LI, ymax = UI, group = 1), alpha = 0.4, data = summ_stats) +
+  labs(title = TeX(paste0('Dose response curve samples when $\\tau^2 = ', tau^2, '$'))) + 
+  scale_x_discrete(name = '', expand = c(0.05, 0.05)) + 
+  scale_y_continuous(name = TeX('Log hazard ratios $\\theta_{d}$'), limits = c(-10, 10)) + 
+  theme(legend.position = 'none')
+
+tau = 2
+
+theta_prior = array(NA, dim = c(n_sims, D))
+for (i in 1:n_sims) {
+  theta_prior[i,1] = rnorm(1, 0, 1)
+  for (d in 2:D) {
+    theta_prior[i,d] = rnorm(1, theta_prior[i,d-1], tau)
+  }
+}
+
+prior_draws = reshape2::melt(theta_prior, varnames = c('Iteration', 'Dose')) %>% 
+  mutate(TRTPN = factor((key_arms[-1])[Dose], levels = key_arms[-1]))
+summ_stats = prior_draws %>% 
+  group_by(TRTPN) %>% 
+  summarize(mean = mean(value), 
+            LI = quantile(value, probs = 0.025), 
+            UI = quantile(value, probs = 0.975)) 
+
+ggplot() + 
+  geom_line(aes(x = TRTPN, y = value, group = Iteration), alpha = 0.35, data = prior_draws %>% filter(Iteration <= n_sims/50)) +
+  geom_point(aes(x = TRTPN, y = mean, group = 1), col = 'red', size = 3, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = mean, group = 1), col = 'red', size = 1, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = LI, group = 1), lty = 3, data = summ_stats) +
+  geom_line(aes(x = TRTPN, y = UI, group = 1), lty = 3, data = summ_stats) +
+  geom_ribbon(aes(x = TRTPN, ymin = LI, ymax = UI, group = 1), alpha = 0.4, data = summ_stats) +
+  labs(title = TeX(paste0('Dose response curve samples when $\\tau^2 = ', tau^2, '$'))) + 
+  scale_x_discrete(name = '', expand = c(0.05, 0.05)) + 
+  scale_y_continuous(name = TeX('Log hazard ratios $\\theta_{d}$'), limits = c(-10, 10)) + 
+  theme(legend.position = 'none')
+```
+
+
+Small values of $\tau^{2}$ indicate that the responses of successive doses are likely to be very similar, and that there is more borrowing (smoothing) across doses.
+Large values of $\tau^{2}$ indicate that the responses of successive doses are highly variable, and that there is less smoothing across doses. 
+
+
+**Note**: we sampled dose-response curves for *fixed* values of $\tau^{2}$.
+In the model, we will put a prior on $\tau^{2}$, therefore the implied prior on the dose-response curve will have an even larger variability (it incorporates uncertainty on $\tau^{2}$ as well).
+We will discuss the prior distribution on the parameter $\tau^{2}$ in Section \@ref(sec-priors).
+
+
+# Data Generation
+
+
+To demonstrate how we can make inference on this model, we first need to simulate some data.
+
+
+Let us load some useful functions and create the quantities corresponding to the underlying true model parameter.
+
+
+<details>
+<summary>Click to explore the functions in `utils_tte.R`.</summary>
+```{r print_fcts, echo = FALSE}
+writeLines(readLines("utils_tte.R"))
+```
+</details>
+
+
+```{r include_fcts, results = 'hide'}
+source('utils_tte.R')
+key_arms = c('Control', 'Dose 1', 'Dose 2', 'Dose 3', 'Dose 4')
+key_palette = c('black', brewer.pal(9, 'Set1')[1:(length(key_arms) - 1)])
+
+data_seed = 12345
+
+s_j_true = c(0, 5, 10, 15, 20) # cutpoints
+lambda_true = c(0.06, 0.06, 0.03, 0.03) # baseline hazard rates
+theta_true = log(c(1.5, 2, 2.5, 1.75)) # hazard ratios
+```
+
+
+We first have to generate the allocation to each arm.
+In our example, we use an allocation $2:1:1:1:1$ in blocks of $12$.
+
+
+```{r randlist}
+N = 250 # sample size 
+D = length(theta_true) # number of doses 
+
+rnd_ratio = c(4, 2, 2, 2, 2) # randomization ratio
+blk_size = sum(rnd_ratio) # block size
+
+# Generate the random allocations
+set.seed(data_seed)
+dose_label = tibble(BLOCK = c(rep(1:floor(N/blk_size), each = blk_size), 
+                              rep(floor(N/blk_size) + 1, N - length(rep(1:floor(N/blk_size), 
+                                                                        each = blk_size))))) %>% 
+  group_by(BLOCK) %>% 
+  mutate(TRTNUM = sample(rep(0:D, times = rnd_ratio), length(BLOCK))) %>% 
+  ungroup() %>% 
+  pull(TRTNUM)
+```
+
+
+We then create the allocation matrix $X$ where $X_{i,d} = 1$ if patient $i$ is randomized to the active dose $d$, and zero otherwise.
+In the example below, we show the first rows of $X$, where the allocations correspond to (`r key_arms[1 + dose_label[1:6]]`).
+
+
+```{r}
+# Put the allocations into the dose matrix format
+X = matrix(0, N, D)
+for (s in 1:D){
+  X[which(dose_label == s),s] = 1
+}
+
+# Show X in output
+X %>% 
+  colnames_inplace(sprintf('Dose %s', 1:D)) %>% 
+  head(n = 6) %>% 
+  knitr::kable(booktabs = TRUE, 
+               caption = 'First rows of the dose allocation matrix X.') %>% 
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+We can also setup the accrual parameters.
+For example, consider a peak rate accrual of $3$ patients per week with no ramp-up period.
+
+
+```{r accr_profile}
+accr_profile = NULL
+accr_profile$peak_rate = 3 # in weeks
+accr_profile$ramp_up = 0 # in weeks
+```
+
+
+Given a survival function, exact simulation of event times can be achieved using a variant of the [inverse cumulative distribution function method](https://en.wikipedia.org/wiki/Inverse_transform_sampling).
+In fact, solving $S(t)$ for $t$, we get
+\begin{equation}
+t = s_{k-1} - \dfrac{\log S(t)}{\lambda_{k}} - \dfrac{\sum_{j=1}^{k-1} \lambda_{j} (s_{j} - s_{j-1})}{\lambda_{k}}
+(\#eq:inv-cdf)
+\end{equation}
+
+
+Hence we can use the following method:
+
+1. Sample $u \sim U(0, 1)$
+2. Find the correct interval using the conditions $s_{k-1} < t \leq s_{k}$, i.e.
+$$
+\begin{cases}
+s_{k-1} < t & \Leftrightarrow && \log u < - \sum_{j = 1}^{k - 1} \lambda_{j} (s_{j} - s_{j-1})
+\\
+s_{k} \geq t & \Leftrightarrow && \log u \geq - \sum_{j = 1}^{k} \lambda_{j} (s_{j} - s_{j-1})
+\end{cases}
+$$
+3. Calculate $t$ using \@ref(eq:inv-cdf)
+
+
+The figures below illustrate this algorithm, implemented in the function `sample_pwc_data()`.
+
+
+```{r data_generation_plt, echo = F, out.width = "49%"}
+J = length(lambda_true)
+max_followup = 20
+
+# Now we use the inverse cdf method to sample from the likelihood model
+u = c(0.952, 0.657, 0.537, 0.444, 0.142)
+
+# Check which time interval the observation should fall into
+s_j_temp = s_j_true
+s_j_temp[J+1] = +Inf
+H_temp = c(0, cumsum(lambda_true * diff(s_j_temp)))
+time = event = interval_idx = array(NA, dim = length(u))
+for (i in 1:length(u)) {
+  interval_idx[i] = head(which(log(u[i]) >= - H_temp), 1) - 1
+  
+  if (length(interval_idx[i]) == 0){ # censored at the observation window endpoint
+    time[i] = max_followup
+    event[i] = 0
+  }
+  else { # sampled from the model in that interval
+    event[i] = 1
+    time[i] = s_j_true[interval_idx[i]] - 1/lambda_true[interval_idx[i]] * (log(u[i]) + H_temp[interval_idx[i]])
+    if (time[i] > max_followup){ # it still could be censored in that interval
+      time[i] = max_followup
+      event[i] = 0
+    }
+  }
+}
+
+i = 1
+ggplot() +
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), size = 1) +
+  geom_hline(yintercept = u[i], size = 1, lty = 2, col = 'red') +
+  geom_vline(xintercept = time[i], size = 1, col = 'red', lty = 2) +
+  geom_point(aes(x = time[i], y = u[i]), col = 'red', size = 4) + 
+  geom_vline(xintercept = s_j_true, lty = 3) +
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00, u[i]), labels = c('0.00', '0.25', '0.50', '0.75', '1.00', 'u')) + 
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0), 
+                     breaks = c(0, 10, 20, 30, time[i]), labels = c('0', '10', '20', '30', 't')) + 
+  theme(text = element_text(size = 16))
+i = 2
+ggplot() +
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), size = 1) +
+  geom_hline(yintercept = u[i], size = 1, lty = 2, col = 'red') +
+  geom_vline(xintercept = time[i], size = 1, col = 'red', lty = 2) +
+  geom_point(aes(x = time[i], y = u[i]), col = 'red', size = 4) + 
+  geom_vline(xintercept = s_j_true, lty = 3) +
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00, u[i]), labels = c('0.00', '0.25', '0.50', '0.75', '1.00', 'u')) + 
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0), 
+                     breaks = c(0, 10, 20, 30, time[i]), labels = c('0', '10', '20', '30', 't')) + 
+  theme(text = element_text(size = 16))
+i = 3
+ggplot() +
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), size = 1) +
+  geom_hline(yintercept = u[i], size = 1, lty = 2, col = 'red') +
+  geom_vline(xintercept = time[i], size = 1, col = 'red', lty = 2) +
+  geom_point(aes(x = time[i], y = u[i]), col = 'red', size = 4) + 
+  geom_vline(xintercept = s_j_true, lty = 3) +
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00, u[i]), labels = c('0.00', '0.25', '0.50', '0.75', '1.00', 'u')) + 
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0), 
+                     breaks = c(0, 10, 20, 30, time[i]), labels = c('0', '10', '20', '30', 't')) + 
+  theme(text = element_text(size = 16))
+i = 4
+ggplot() +
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), size = 1) +
+  geom_hline(yintercept = u[i], size = 1, lty = 2, col = 'red') +
+  geom_vline(xintercept = time[i], size = 1, col = 'red', lty = 2) +
+  geom_point(aes(x = time[i], y = u[i]), col = 'red', size = 4) + 
+  geom_vline(xintercept = s_j_true, lty = 3) +
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00, u[i]), labels = c('0.00', '0.25', '0.50', '0.75', '1.00', 'u')) + 
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0), 
+                     breaks = c(0, 10, 20, 30, time[i]), labels = c('0', '10', '20', '30', 't')) + 
+  theme(text = element_text(size = 16))
+i = 5
+ggplot() +
+  geom_line(aes(x = t_grid, y = St(t_grid, s_j_true, lambda_true)), size = 1) +
+  geom_hline(yintercept = u[i], size = 1, lty = 2, col = 'red') +
+  geom_vline(xintercept = time[i], size = 1, col = 'red', lty = 2) +
+  geom_point(aes(x = time[i], y = u[i]), col = 'red', size = 4) + 
+  geom_vline(xintercept = s_j_true, lty = 3) +
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.50, 0.75, 1.00, u[i]), labels = c('0.00', '0.25', '0.50', '0.75', '1.00', 'u')) + 
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0), 
+                     breaks = c(0, 10, 20, 30, time[i]), labels = c('0', '10', '20', '30', 't')) + 
+  theme(text = element_text(size = 16))
+```
+
+
+Let us generate some data, and then we can censor them the maximum follow-up time of $20$ weeks. 
+
+
+```{r generate_data}
+set.seed(data_seed)
+data = sample_pwc_data(n = N, # sample size
+                       X = X, # dose allocation matrix
+                       lambda = lambda_true, # baseline hazard rates
+                       theta = theta_true, # log hazard ratios
+                       s_j = s_j_true, # cutpoints 
+                       T_max = 0, # follow-up after last randomized patient
+                       accr_profile = accr_profile, # accrual profile
+                       t0 = 0 # current week (0 for beginning of time)
+)
+
+# Censor the observations at the maximum follow-up
+data$event[which(data$time > 20)] = 0
+data$time[which(data$time > 20)] = 20
+
+y = as.numeric(data$time) # either censoring time (if event == 0) or death time (if event == 1)
+nu = as.numeric(data$event) # event indicator
+```
+
+
+We can visualize the data we just generated with a Kaplan-Meier plot, and compare it with the (theoretical) survival curves.
+
+
+```{r true_survival, out.width = '49%', fig.show="hold"}
+# True survival curves
+tibble(X = rep(t_grid, length(key_arms)), 
+       y = c(St(t_grid, s_j_true, lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[1]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[2]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[3]) * lambda_true), 
+             St(t_grid, s_j_true, exp(theta_true[4]) * lambda_true)), 
+       TRTPN = factor(rep(key_arms, each = length(t_grid)), levels = key_arms)) %>% 
+  ggplot() + 
+  geom_line(aes(x = X, y = y, col = TRTPN), size = 1) + 
+  geom_vline(xintercept = s_j_true, lty = 3, size = 1) + 
+  scale_x_continuous(name = 'Follow-up time (weeks)', expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0)) +
+  scale_color_manual(name = 'Arm', values = key_palette) +
+  theme(legend.position = 'top', text = element_text(size = 16))
+
+# KM Plot
+dat_KM = tibble(Duration = y,
+                Outcome = nu,
+                Dose = factor(dose_label))
+fit_KM <- survfit(Surv(Duration, Outcome) ~ Dose, data = dat_KM)
+p_km = ggsurvplot(fit_KM,
+                  data = dat_KM,
+                  size = 1, 
+                  legend.title = "Arm",
+                  legend.labs = key_arms,
+                  palette = key_palette,
+                  axes.offset = F,
+                  ggtheme = theme_bw(base_size = 16)
+)
+p_km$plot +
+  geom_vline(xintercept = s_j_true, size = 1, lty = 3) +
+  labs(x = 'Follow-up time (weeks)', y = TeX("$S(t)$"))
+```
+
+
+We can also inspect the accrual of the trial that we just simulated. 
+
+
+```{r accrual_plt}
+tibble(TIMESINCERAND = data$dates) %>%   
+  mutate(Subject = row_number()) %>% 
+  mutate(EXPACCR = Lambda(t = TIMESINCERAND, peak_rate = accr_profile$peak_rate, 
+                          ramp_up = accr_profile$ramp_up)) %>% 
+  ggplot() + 
+  geom_step(aes(x = TIMESINCERAND, y = Subject, col = 'observed'), size = 1) + 
+  geom_line(aes(x = TIMESINCERAND, y = EXPACCR, 
+                col = paste0(accr_profile$peak_rate, ' per week')), 
+            size = 1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = 'Weeks since start of accrual', 
+       y = 'Cumulative number of subjects', 
+       title = 'Observed vs simulated accrual') + 
+  scale_color_brewer(name = '', palette = 'Dark2') + 
+  theme(legend.position = "top")
+```
+
+
+# Model Fitting {#sec-model}
+
+
+When fitting the data, the first choice we are confronted with is the specification of the time intervals $s_{1}, \dots, s_{J}$ in which the hazard rates are constant. 
+At this stage we do not know the underlying mechanism that generated the data, and our guess is to use two intervals with a single cutpoint at $t = 10$.
+Note that, even though we used four intervals in the data generation, the hazard rates were constant across the first two intervals and across the last two intervals.
+Therefore, choosing only two intervals falls within the same family that generated the data (model is not misspecified) and we should be able to recover the underlying true parameters.
+
+
+```{r define_intervals}
+model_seed = 11111
+
+# Define interval breaks (in weeks)
+eps = 1E-6
+s_j = c(0, eps + c(10, 20)) 
+J = length(s_j) - 1
+```
+
+
+Note that we have added a small perturbation to `s_j` to ensure that no observation falls at the cutpoints (this can give rise to computational issues).
+
+
+## Prior Elicitation {#sec-priors}
+
+
+We first outline a potential strategy to elicit the priors in this case study. 
+
+
+The baseline hazard rates $\lambda_{j}$ are assumed to be constant within each segment $j$, and modeled with independent weakly-informative prior distributions:
+$$\lambda_{j} \sim \text{Gamma}(a_{j}, b_{j}),$$
+where the $\text{Gamma}(a, b)$ distribution has the following density function:
+$$f(\lambda) = \frac{b^{a}}{\Gamma(a)} \lambda^{a-1}\text{exp}(-b \lambda), \quad \lambda > 0$$
+with mean $a / b$ and weight $a$.
+
+
+We can choose the prior on the baseline hazard rates using previous studies. 
+For example, say that it is expected that $40\%$ of patients in the control group will experience a primary endpoint event within the first $20$ weeks of exposure. 
+Assuming an exponential distribution, the weekly hazard rate corresponding to $40\%$ cumulative event rate by $20$ weeks is equal to 
+$$
+\begin{align*}
+&S(20) = 1 - 0.4 = \exp\{-H(20)\} = \exp\{-20 \lambda\} 
+\\
+\Rightarrow \quad &\lambda = - \dfrac{\log (1 - 0.4)}{20} = `r round(- log (1 - 0.4) / 20, 4)`.
+\end{align*}
+$$ 
+Therefore the prior for the event rate should be centered at $`r round(- log (1 - 0.4) / 20, 4)`$ for the first $20$ weeks.
+If we are not very confident in this prior mean, the event rates could be given very little weight.
+For example, choosing $a_{j} = 1$ and $b_{j} = `r 1 / round(- log (1 - 0.4) / 20, 4)`$ is equivalent to observing $1$ event with $`r round(- 20 / log (1 - 0.4), 4)`$ weeks of exposure. 
+The piecewise exponential model provides the flexibility to allow for the control hazard rate to change over the time period, but a priori the distributions are the same for each time segment. 
+
+
+```{r pr_calibration, echo = F, out.width = "49%"}
+lambda_grid = seq(0, max(rgamma(1000, 1, 1 / round(- log (1 - 0.4) / 20, 4))), length.out = 200)
+ggplot() +
+  geom_line(aes(x = lambda_grid, y = dgamma(lambda_grid, 1, 1 / round(- log (1 - 0.4) / 20, 4))), col = key_palette[1], size = 2) +
+  geom_vline(xintercept = round(- log (1 - 0.4) / 20, 4), col = 'red', lty = 3, size = 1) +
+  scale_x_continuous(name = TeX("$\\lambda_{j}$"), expand = c(0, 0)) +
+  scale_y_continuous(name = 'density', expand = c(0, 0)) +
+  theme(text = element_text(size = 16))
+
+ggplot() + 
+  geom_line(aes(x = t_grid, y = St(t_grid, c(0, 10, 20), rep(round(- log (1 - 0.4) / 20, 4), 2))), col = key_palette[1], size = 2) +
+  geom_point(aes(x = 20, y = 0.6), col = 'red', size = 3) +
+  geom_vline(xintercept = c(0, 10, 20), lty = 3, size = 1) + 
+  geom_hline(yintercept = 0.60, col = 'red', lty = 3, size = 1) +
+  scale_x_continuous(name = 'time (weeks)', limits = c(0, 30), expand = c(0, 0)) + 
+  scale_y_continuous(name = TeX("$S(t)$"), limits = c(0, 1), expand = c(0, 0), 
+                     breaks = c(0, 0.25, 0.5, 0.6, 0.75, 1)) +
+  theme(text = element_text(size = 16))
+```
+
+
+The parameter $\tau^{2}$ controls the degree of smoothing between doses, and is estimated using an inverse gamma prior:
+$$\tau^{2} \sim \text{inv-Gamma}\left(\dfrac{\alpha}{2} , \dfrac{\alpha \beta^{2}}{2} \right),$$
+where the $\text{inv-Gamma}(\alpha / 2, \alpha \beta^{2} / 2)$ distribution has the following density function:
+$$f(\tau^{2}) = \frac{(\alpha / 2)^{\alpha / 2} \beta^{\alpha}}{\Gamma(\alpha / 2)} \left( \frac{1}{\tau^{2}} \right)^{\alpha/2+1}\text{exp}\left( -\frac{\alpha \beta^{2}}{2 \tau^{2}} \right), \quad \tau^{2} > 0$$
+with central value $\beta$ and weight $\alpha$.
+
+
+We can choose a non-informative prior so that the observed data very quickly overcomes its effect.
+For example, $\alpha = 1, \beta = 1$ assumes a weight of 1 and central value for the variance parameter of 1. 
+
+
+```{r prior_hypers}
+# Prior hazard hyperparameters
+a_j = rep(1, J)
+b_j = rep(1/round(- log (1 - 0.4) / 20, 4), J)
+
+alpha = 1
+beta = 1
+```
+
+
+## Posterior Sampling
+
+
+When dealing with censored data, we observe the minimum time between the event time and the censoring time, i.e. $y_{i} = \min\{T_{i}, C_{i}\}$, and the censoring indicator $\delta_{i} = 1(T_{i} \leq C_{i})$.
+
+
+In general, the likelihood corresponding to the $i^{th}$ observation in survival analysis is 
+
+$$
+L_{i} =  \lambda(y_{i} )^{\delta_{i}} S(y_{i}).
+$$
+
+
+In our specific model, we have an analytic expression for the hazard function and for the survival function.
+Therefore, the likelihood can be rewritten as 
+$$
+\begin{align*}
+L_{i} &= \left\{ e^{\mathbf{x}_{i}^T \boldsymbol{\theta}} \lambda_{0} (y_{i}) \right\}^{\delta_{i}} S_{0}(y_{i})^{e^{\mathbf{x}_{i}^T \boldsymbol{\theta}}}
+\\
+&= \left( e^{\mathbf{x}_{i}^T \boldsymbol{\theta}} \lambda_{i^{\star}} \right)^{\delta_{i}} \exp\left\{ - e^{\mathbf{x}_{i}^T \boldsymbol{\theta}} \sum_{j = 1}^{i^{\star}} H_{ij} \lambda_{j} \right\},
+\end{align*}
+$$
+where $i^{\star}$ denotes the interval in which the time $y_{i}$ (either censoring time or event time) falls, and $H_{ij}$ denotes the exposure of subject $i$ in each segment $j$, i.e.
+$$H_{ij} = 
+\begin{cases}
+s_{j} - s_{j-1} & \text{if } y_{i} \notin I_{j}
+\\
+y_{i} - s_{j-1} & \text{if } y_{i} \in I_{j}.
+\end{cases}$$
+In the last equality, we used the expression for the survival function that we had previously described in \@ref(eq:surv-fct).
+
+
+We can use the function `get_summary_stats()` to calculate the important summary statistics $(H_{ij}, i^{\star})$, i.e. exposure in each segment for each patient and interval event indicator for each patient.
+These will be passed into STAN and will be used to calculate the likelihood.
+
+
+```{r get_summ_stats}
+# Calculate summary statistics
+summ_stats = get_summary_stats(y, nu, s_j)
+
+# Put data in list for STAN
+stan_data <- list(N = N,
+                  X = X,
+                  D = D,
+                  J = J,
+                  delta = summ_stats$delta_i,
+                  H = summ_stats$Hij,
+                  a_j = a_j,
+                  b_j = b_j, 
+                  alpha = alpha, 
+                  beta = beta
+)
+```
+
+
+We can run the following STAN model. 
+
+
+```{r print_model}
+writeLines(readLines("./TTE_pwc.stan"))
+```
+
+
+The main part of this model is the likelihood calculation via the function `pc_haz()`.
+This simply performs the likelihood update on the log scale, as described above. 
+
+
+We can now run the model and put the results (MCMC chains) into a matrix whose columns correspond to the different model parameters $\lambda_{1}, \dots, \lambda_{J}, \theta_{1}, \dots, \theta_{D}, \tau^{2}$.
+
+
+
+```{r run_model}
+# Run STAN model
+n_iters = 5000
+burnin = 2500
+n_chains = 2
+set.seed(model_seed)
+fit <- stan(file = './TTE_pwc.stan',
+            data = stan_data,
+            chains = n_chains,
+            warmup = burnin,
+            iter = n_iters,
+            seed = model_seed) %>%
+  extract()
+
+# Extract model output
+samples = fit$lambda %>%
+  cbind(fit$theta) %>%
+  cbind(fit$tau2) %>%
+  colnames_inplace(c(sprintf('lambda[%s]', 1:J), sprintf('theta[%s]', 1:D), 'tau^2'))
+```
+
+
+## MCMC Diagnostics
+
+
+The traceplots for the model parameters do not show any concerning behavior.  
+
+
+```{r traceplots, out.width= "100%"}
+# Traceplots
+mcmc_trace(samples, facet_args = list(labeller = ggplot2::label_parsed, 
+                                      ncol = 2))
+```
+
+
+The total sample size of the chains was `r n_chains * (n_iters - burnin)`, and the effective sample sizes are very close to their optimal values. 
+
+
+```{r ess}
+# Effective sample size
+print(round(coda::effectiveSize(samples)))
+```
+
+
+For some parameters, the the effective sample sizes are larger than the actual sample sizes.
+As detailed in the [STAN guide](https://mc-stan.org/docs/2_29/reference-manual/effective-sample-size.html), this can happen for parameters which have close to Gaussian posterior and little dependency on other parameters.
+
+
+# Posterior Checks
+
+
+Once we have the MCMC draws, we can calculate any functional of interest, e.g. posterior mean, median, quantiles, etc. 
+
+
+```{r}
+samples %>% 
+  as_tibble %>% 
+  pivot_longer(cols = everything(), names_to = 'Parameter') %>% 
+  group_by(Parameter) %>% 
+  summarize(Mean = mean(value), 
+            Sd = sd(value),
+            Median = median(value), 
+            Low = quantile(value, probs = 0.025), 
+            Upp = quantile(value, probs = 0.975), 
+            ESS = round(coda::effectiveSize(value))) %>% 
+  mutate(Mean = sprintf("$%0.3f$", Mean), 
+         Sd = sprintf("$%0.3f$", Sd),
+         MCI = sprintf("$%0.3f$ ($%0.3f$, $%0.3f$)", Median, Low, Upp), 
+         ESS = sprintf("$%s$", ESS)) %>% 
+  select(Parameter, Mean, `Std. Dev.` = Sd, `Median (95% CI)` = MCI, 
+         `Effective Sample Size` = ESS) %>% 
+  mutate(Parameter = str_replace_all(Parameter, '\\[', '\\_'), 
+         Parameter = str_remove_all(Parameter, '\\]'), 
+         Parameter = paste0("$\\", Parameter, "$")) %>% 
+  knitr::kable(booktabs = TRUE, 
+               caption = 'Posterior estimates of the model parameters.') %>% 
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+We can calculate the survival curves associated to each MCMC draw. 
+Averaging across these sampled survival curves will give us an estimate (posterior mean) which hopefully matches the data well.
+
+
+```{r survival_curves}
+# Survival curves for each treatment arm
+post_surv_ctr = St(t = t_grid,
+                   s_j = s_j,
+                   lambda = samples[,1:J])
+post_surv_trt1 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+1]) * samples[,1:J])
+post_surv_trt2 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+2]) * samples[,1:J])
+post_surv_trt3 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+3]) * samples[,1:J])
+post_surv_trt4 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+4]) * samples[,1:J])
+post_survival = post_surv_ctr %>%
+  reshape2::melt(varnames = c('t', 'iteration')) %>%
+  mutate(t = t_grid[t],
+         TRTPN = key_arms[1]) %>%
+  bind_rows(post_surv_trt1 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[2])) %>%
+  bind_rows(post_surv_trt2 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[3])) %>%
+  bind_rows(post_surv_trt3 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[4])) %>%
+  bind_rows(post_surv_trt4 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[5])) %>%
+  group_by(t, TRTPN) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, probs = 0.025),
+            upp = quantile(value, probs = 0.975)) %>%
+  ungroup() %>%
+  mutate(TRTPN = factor(TRTPN, levels = key_arms))
+
+
+# KM Estimate
+dat_KM = tibble(ExpTime = y, PRIM = nu, Dose = factor(key_arms[dose_label + 1]))
+fit_KM <- survfit(Surv(ExpTime, PRIM) ~ Dose, data = dat_KM)
+p_km = ggsurvplot(fit_KM,
+                  data = dat_KM,
+                  palette = key_palette,
+                  legend = "top",
+                  legend.title = "Arm",
+                  legend.labs = levels(dat_KM$Dose),
+                  axes.offset = FALSE,
+                  break.time.by = 10,
+                  ggtheme = custom_theme()
+)
+
+# Posterior survival curves and KM plot
+p_km = p_km$plot +
+  geom_line(data = post_survival, aes(x = t, y = mean, col = TRTPN), size = 1, lty = 4) +
+  # geom_ribbon(data = post_survival, 
+  #             aes(x = t, ymin = low, ymax = upp, fill = TRTPN), 
+  #             alpha = 0.25, inherit.aes = FALSE) +
+  geom_vline(xintercept = s_j, lty = 3) +
+  scale_y_continuous(expand = c(0.001, 0.001)) +
+  labs(x = 'Follow-up time (weeks)', y = 'Survival probability') +
+  theme(legend.position = 'top')
+p_km
+```
+
+
+We see that the model fit seems to be in agreement with the Kaplan-Meier curves. 
+We can also compare the distribution of the hazard ratios with the true underlying values that we used to simulate the data. 
+
+
+```{r dr_curve}
+# Dose response curve (HR density for each dose)
+samples %>%
+  as_tibble() %>%
+  select(contains('theta')) %>%
+  add_column('theta[0]' = 0, .before = 'theta[1]') %>%
+  pivot_longer(cols = everything(), names_to = 'TRTPN', values_to = 'HR',
+               names_prefix = 'theta') %>%
+  mutate(TRTPN = as.numeric(str_remove_all(TRTPN, "\\[|\\]")), 
+         HR = exp(HR),
+         TRTPN = factor(key_arms[as.numeric(TRTPN) + 1], levels = key_arms)) %>%
+  group_by(TRTPN) %>%
+  summarize(low = quantile(HR, probs = 0.025),
+            upp = quantile(HR, probs = 0.975),
+            mean = mean(HR),
+            median = median(HR)) %>%
+  ggplot() +
+  geom_point(aes(x = TRTPN, y = mean), pch = 10, size = 4, stroke = 1) +
+  geom_line(aes(x = TRTPN, y = mean, group = 1), size = 1) +
+  geom_line(aes(x = TRTPN, y = low, group = 1), lty = 3) +
+  geom_line(aes(x = TRTPN, y = upp, group = 1), lty = 3) +
+  geom_point(aes(x = 1:5, y = c(1, exp(theta_true))), col = 'red') + 
+  geom_ribbon(aes(x = TRTPN, ymin = low, ymax = upp, group = 1), alpha = 0.25) +
+  labs(x = '', y = 'Hazard ratios')
+```
+
+
+Lastly, we also show that the underlying baseline hazard rates can be recovered well by our model implementation.
+
+
+```{r baseline_hz}
+# Baseline hazard function
+reshape2::melt(ht(t_grid, s_j, samples[,1:J]), varnames = c('Iteration', 'X')) %>%
+  mutate(X = t_grid[X]) %>%
+  group_by(X) %>%
+  dplyr::summarize(ybar = mean(value),
+                   UI = quantile(value, probs = 0.975),
+                   LI = quantile(value, probs = 0.025)) %>%
+  ggplot() +
+  geom_line(aes(x = X, y = ybar), size = 1) +
+  geom_ribbon(aes(x = X, ymin = LI, ymax = UI), alpha = 0.3) +
+  geom_step(data = data.frame(s_j_true = s_j_true, 
+                              lambda_true = c(lambda_true, tail(lambda_true, 1))),
+            aes(x = s_j_true, y = lambda_true), size = 1, col = 'red') +
+  geom_vline(xintercept = s_j, lty = 3) +
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  labs(y = TeX("$\\lambda_{j}$"))
+```
+
+
+<!-- # Quantities of Interest -->
+
+
+<!-- ## Probability of Superiority -->
+
+
+<!-- ```{r} -->
+<!-- samples %>% -->
+<!--   as_tibble() %>% -->
+<!--   select(contains('theta')) %>% -->
+<!--   pivot_longer(cols = everything(), names_to = 'TRTPN', values_to = 'HR', -->
+<!--                names_prefix = 'theta') %>% -->
+<!--   mutate(TRTPN = as.numeric(str_remove_all(TRTPN, "\\[|\\]")), -->
+<!--          HR = exp(HR), -->
+<!--          TRTPN = factor(key_arms[as.numeric(TRTPN) + 1], levels = key_arms)) %>%  -->
+<!--   group_by(TRTPN) %>%  -->
+<!--   summarize(PSup = mean(HR > 1),  -->
+<!--             PSuperSup = mean(HR > 2)) -->
+<!-- ```      -->
+
+
+
+<!-- ## Predictive Probabilities -->
+
+
+<!-- # Calculate the number of patients to be still randomized -->
+<!-- max_sample_size = 330 -->
+<!-- N_imp = max_sample_size - n_mITT -->
+
+<!-- # Define the censoring rate corresponding to 15% at a year -->
+<!-- year_to_weeks = 365.25 / 7 -->
+<!-- cens_rate = - log(0.85) / year_to_weeks -->
+<!-- # cens_rate = - log(0.995) / year_to_weeks -->
+<!-- # cens_rate = - log(0.36) / year_to_weeks -->
+
+
+<!-- PE_n = PE_max = array(NA, dim = Niter) -->
+<!-- RESP_n = RESP_max = array(NA, dim = Niter) -->
+<!-- NRESP_n = NRESP_max = array(NA, dim = Niter) -->
+<!-- set.seed(model_seed) -->
+<!-- my_seeds = sample(1:100000, Niter, FALSE) -->
+
+<!-- for (i in 1:Niter) { -->
+<!--   hazard_temp = samples[i,] -->
+
+<!--   set.seed(my_seeds[i]) -->
+
+<!--   # Calculate predictive probability at the current sample size with full follow-up -->
+<!--   imp_data_n = sample_followup_data_curr(subj_id = dat$ID, time = dat$EXPTIME,  -->
+<!--                                          event = dat$peefl, dropout = dat$DPOUTFL, -->
+<!--                                          resp = dat$RESP,  -->
+<!--                                          lambda = hazard_temp, s_j = s_j,  -->
+<!--                                          T_max = 39, cens_rate = cens_rate) -->
+
+<!--   RESP_n[i] = sum(imp_data_n$RESP == 1, na.rm = T) -->
+<!--   NRESP_n[i] = sum(imp_data_n$RESP == 0, na.rm = T) -->
+<!--   PE_n[i] = pbeta(P_Goal,  -->
+<!--                   efficacy_priors$a + RESP_n[i],  -->
+<!--                   efficacy_priors$b + NRESP_n[i],  -->
+<!--                   lower.tail = F) -->
+
+
+<!--   # Calculate predictive probability to the maximum sample size with full follow-up -->
+<!--   imp_data_max = sample_pwc_data_new(n = N_imp, lambda = hazard_temp, s_j = s_j, -->
+<!--                                      T_max = 39, cens_rate = cens_rate) -->
+
+<!--   compl_data = bind_rows(imp_data_n, imp_data_max) -->
+
+<!--   RESP_max[i] = sum(compl_data$RESP == 1, na.rm = T) -->
+<!--   NRESP_max[i] = sum(compl_data$RESP == 0, na.rm = T) -->
+<!--   PE_max[i] = pbeta(P_Goal,  -->
+<!--                     efficacy_priors$a + RESP_max[i],  -->
+<!--                     efficacy_priors$b + NRESP_max[i], -->
+<!--                     lower.tail = F) -->
+<!-- } -->
+
+
+# Sensitivity Analyses
+
+
+We describe here possible additional analyses that might be performed when implementing a trial. 
+
+
+## Smoothing Prior Hyperparameters
+
+
+We repeat the analysis described in Section \@ref(sec-model) with a different prior for the smoothing parameter $\tau^{2}$, favoring more borrowing of information across doses.
+We will be using $\alpha = 10$, $\beta = 0.1$.
+
+
+```{r sens_hypers}
+# Define interval breaks (in weeks)
+s_j = c(0, eps + c(10, 20)) 
+J = length(s_j) - 1
+
+# Prior hazard hyperparameters
+a_j = rep(1, J)
+b_j = rep(1/round(- log (1 - 0.4) / 20, 4), J)
+
+alpha = 10
+beta = 0.1
+
+# Calculate summary statistics
+summ_stats = get_summary_stats(y, nu, s_j)
+
+# Put data in list for STAN
+stan_data <- list(N = N,
+                  X = X,
+                  D = D,
+                  J = J,
+                  delta = summ_stats$delta_i,
+                  H = summ_stats$Hij,
+                  a_j = a_j,
+                  b_j = b_j, 
+                  alpha = alpha, 
+                  beta = beta
+)
+
+
+# Run STAN model
+set.seed(model_seed)
+fit <- stan(file = './TTE_pwc.stan',
+            data = stan_data,
+            chains = n_chains,
+            warmup = burnin,
+            iter = n_iters,
+            seed = model_seed) %>%
+  extract()
+
+# Extract model output
+samples = fit$lambda %>%
+  cbind(fit$theta) %>%
+  cbind(fit$tau2) %>%
+  colnames_inplace(c(sprintf('lambda[%s]', 1:J), sprintf('theta[%s]', 1:D), 'tau^2'))
+
+
+# Dose response curve (HR density for each dose)
+samples %>%
+  as_tibble() %>%
+  select(contains('theta')) %>%
+  add_column('theta[0]' = 0, .before = 'theta[1]') %>%
+  pivot_longer(cols = everything(), names_to = 'TRTPN', values_to = 'HR',
+               names_prefix = 'theta') %>%
+  mutate(TRTPN = as.numeric(str_remove_all(TRTPN, "\\[|\\]")),
+         HR = exp(HR),
+         TRTPN = factor(key_arms[as.numeric(TRTPN) + 1], levels = key_arms)) %>%
+  group_by(TRTPN) %>%
+  summarize(low = quantile(HR, probs = 0.025),
+            upp = quantile(HR, probs = 0.975),
+            mean = mean(HR),
+            median = median(HR)) %>%
+  ggplot() +
+  geom_point(aes(x = TRTPN, y = mean), pch = 10, size = 4, stroke = 1) +
+  geom_line(aes(x = TRTPN, y = mean, group = 1), size = 1) +
+  geom_line(aes(x = TRTPN, y = low, group = 1), lty = 3) +
+  geom_line(aes(x = TRTPN, y = upp, group = 1), lty = 3) +
+  geom_point(aes(x = 1:5, y = c(1, exp(theta_true))), col = 'red') +
+  geom_ribbon(aes(x = TRTPN, ymin = low, ymax = upp, group = 1), alpha = 0.25) +
+  labs(x = '', y = 'Hazard ratios')
+```
+
+
+Clearly, the dose response curve looks smoother than the one obtained with a vague prior. 
+In this case, we know the underlying true parameters and we realize that this extreme borrowing might be a bit excessive. 
+
+
+## Number of Cutpoints
+
+
+We would like to make as few assumptions as possible about the hazard function in order to avoid incorrect inference on the hazard ratios for the treatment effects. 
+Towards a non-parametric approach, a possible way to do so is to restrict the intervals in which the hazard function is constant.
+Note that this additional flexibility does not come at no cost. 
+
+
+In particular: 
+
+1. Numerical instability and unidentifiability issues are possible when no observations fall in some of the time intervals. This can be mitigated by the prior choice, but in that case the prior effect is not overwhelmed by the data
+2. The proportional hazard assumption, that in practice can be the most restrictive, still holds. This implies that survival curves for different doses cannot cross
+
+
+We here repeat the experiment that we ran in Section \@ref(sec-model) with $8$ intervals between $0$ and $20$ weeks. 
+
+
+```{r sens_cutpoints}
+# Define interval breaks (in weeks)
+s_j = c(0, eps + seq(2.5, 20, by = 2.5))
+J = length(s_j) - 1
+
+# Prior hazard hyperparameters
+a_j = rep(1, J)
+b_j = rep(1/round(- log (1 - 0.4) / 20, 4), J)
+
+alpha = 1
+beta = 1
+
+# Calculate summary statistics
+summ_stats = get_summary_stats(y, nu, s_j)
+
+# Put data in list for STAN
+stan_data <- list(N = N,
+                  X = X,
+                  D = D,
+                  J = J,
+                  delta = summ_stats$delta_i,
+                  H = summ_stats$Hij,
+                  a_j = a_j,
+                  b_j = b_j, 
+                  alpha = alpha, 
+                  beta = beta
+)
+
+
+# Run STAN model
+set.seed(model_seed)
+fit <- stan(file = './TTE_pwc.stan',
+            data = stan_data,
+            chains = n_chains,
+            warmup = burnin,
+            iter = n_iters,
+            seed = model_seed) %>%
+  extract()
+
+
+# Extract model output
+samples = fit$lambda %>%
+  cbind(fit$theta) %>%
+  cbind(fit$tau2) %>%
+  colnames_inplace(c(sprintf('lambda[%s]', 1:J), sprintf('theta[%s]', 1:D), 'tau^2'))
+
+
+# Survival curves for each treatment arm
+post_surv_ctr = St(t = t_grid,
+                   s_j = s_j,
+                   lambda = samples[,1:J])
+post_surv_trt1 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+1]) * samples[,1:J])
+post_surv_trt2 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+2]) * samples[,1:J])
+post_surv_trt3 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+3]) * samples[,1:J])
+post_surv_trt4 = St(t = t_grid,
+                    s_j = s_j,
+                    lambda = exp(samples[,J+4]) * samples[,1:J])
+post_survival = post_surv_ctr %>%
+  reshape2::melt(varnames = c('t', 'iteration')) %>%
+  mutate(t = t_grid[t],
+         TRTPN = key_arms[1]) %>%
+  bind_rows(post_surv_trt1 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[2])) %>%
+  bind_rows(post_surv_trt2 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[3])) %>%
+  bind_rows(post_surv_trt3 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[4])) %>%
+  bind_rows(post_surv_trt4 %>%
+              reshape2::melt(varnames = c('t', 'iteration')) %>%
+              mutate(t = t_grid[t],
+                     TRTPN = key_arms[5])) %>%
+  group_by(t, TRTPN) %>%
+  summarize(mean = mean(value),
+            low = quantile(value, probs = 0.025),
+            upp = quantile(value, probs = 0.975)) %>%
+  ungroup() %>%
+  mutate(TRTPN = factor(TRTPN, levels = key_arms))
+
+
+# KM Estimate
+dat_KM = tibble(ExpTime = y, PRIM = nu, Dose = factor(key_arms[dose_label + 1]))
+fit_KM <- survfit(Surv(ExpTime, PRIM) ~ Dose, data = dat_KM)
+p_km = ggsurvplot(fit_KM,
+                  data = dat_KM,
+                  palette = key_palette,
+                  legend = "top",
+                  legend.title = "Arm",
+                  legend.labs = levels(dat_KM$Dose),
+                  axes.offset = FALSE,
+                  break.time.by = 2.5,
+                  ggtheme = custom_theme()
+)
+
+# Posterior survival curves and KM plot
+p_km = p_km$plot +
+  geom_line(data = post_survival, aes(x = t, y = mean, col = TRTPN), size = 1, lty = 4) +
+  # geom_ribbon(data = post_survival,
+  #             aes(x = t, ymin = low, ymax = upp, fill = TRTPN),
+  #             alpha = 0.25, inherit.aes = FALSE) +
+  geom_vline(xintercept = s_j, lty = 3) +
+  scale_y_continuous(expand = c(0.001, 0.001)) +
+  labs(x = 'Follow-up time (weeks)', y = 'Survival probability') +
+  theme(legend.position = 'top')
+p_km
+
+
+# Dose response curve (HR density for each dose)
+samples %>%
+  as_tibble() %>%
+  select(contains('theta')) %>%
+  add_column('theta[0]' = 0, .before = 'theta[1]') %>%
+  pivot_longer(cols = everything(), names_to = 'TRTPN', values_to = 'HR',
+               names_prefix = 'theta') %>%
+  mutate(TRTPN = as.numeric(str_remove_all(TRTPN, "\\[|\\]")),
+         HR = exp(HR),
+         TRTPN = factor(key_arms[as.numeric(TRTPN) + 1], levels = key_arms)) %>%
+  group_by(TRTPN) %>%
+  summarize(low = quantile(HR, probs = 0.025),
+            upp = quantile(HR, probs = 0.975),
+            mean = mean(HR),
+            median = median(HR)) %>%
+  ggplot() +
+  geom_point(aes(x = TRTPN, y = mean), pch = 10, size = 4, stroke = 1) +
+  geom_line(aes(x = TRTPN, y = mean, group = 1), size = 1) +
+  geom_line(aes(x = TRTPN, y = low, group = 1), lty = 3) +
+  geom_line(aes(x = TRTPN, y = upp, group = 1), lty = 3) +
+  geom_point(aes(x = 1:5, y = c(1, exp(theta_true))), col = 'red') +
+  geom_ribbon(aes(x = TRTPN, ymin = low, ymax = upp, group = 1), alpha = 0.25) +
+  labs(x = '', y = 'Hazard ratios')
+
+
+# Baseline hazard function
+reshape2::melt(ht(t_grid, s_j, samples[,1:J]), varnames = c('Iteration', 'X')) %>%
+  mutate(X = t_grid[X]) %>%
+  group_by(X) %>%
+  dplyr::summarize(ybar = mean(value),
+                   UI = quantile(value, probs = 0.975),
+                   LI = quantile(value, probs = 0.025)) %>%
+  ggplot() +
+  geom_line(aes(x = X, y = ybar), size = 1) +
+  geom_ribbon(aes(x = X, ymin = LI, ymax = UI), alpha = 0.3) +
+  geom_step(data = data.frame(s_j_true = s_j_true,
+                              lambda_true = c(lambda_true, tail(lambda_true, 1))),
+            aes(x = s_j_true, y = lambda_true), size = 1, col = 'red') +
+  geom_vline(xintercept = s_j, lty = 3) +
+  scale_x_continuous(name = 'time (weeks)', expand = c(0, 0)) + 
+  labs(y = TeX("$\\lambda_{j}$"))
+```
+
+
+The estimates still look reasonable for this (slightly) overparametrized model. 
+
+
+# Conclusions
+
+
+Survival modeling is a powerful tool for modeling the occurrence of events, whether events are negative such as death or beneficial such as progression.
+The famous Cox proportional hazards model [@Cox:1972] is an extension that we did not cover here which involves non-parametric modeling of the hazard function.
+
+
+# References {-}
+
+
+<div id="refs"></div>
+
+
+# Original Computing Environment {-}
+
+
+```{r comp_environment}
+writeLines(readLines(file.path(Sys.getenv("HOME"), ".R/Makevars")))
+```
+
+
+```{r sessionInfo}
+sessionInfo()
+```

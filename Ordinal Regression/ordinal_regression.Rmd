@@ -1,0 +1,820 @@
+---
+title: "Ordinal Regression with Longitudinal Model"
+subtitle: ""
+author: "Berry Consultants, LLC"
+date: ""
+link-citations: yes
+linkcolor: blue
+output:
+  bookdown::html_document2:
+    fig_caption: yes
+    theme: flatly # sandstone # spacelab # flatly
+    highlight: pygments
+    toc: TRUE
+    toc_depth: 4
+    number_sections: TRUE
+    toc_float:
+      smooth_scroll: FALSE
+---
+
+```{r initial_setup, include = FALSE, echo = FALSE, results = "hide", message = FALSE, warning = FALSE, error = FALSE}
+knitr::opts_chunk$set(error = FALSE, comment = NA, warning = FALSE, message = FALSE)
+options(knitr.kable.NA = '', knitr.table.format = "html", scipen = 999)
+```
+
+
+
+# Introduction 
+
+
+We consider here a trial with an ordinal primary endpoint, and an underlying longitudinal model that uses information from previous visits for all subjects who have not reached the primary endpoint visit.
+For illustration purposes, we consider a trial with:
+
+- <span style="color:#1B9E77">**control arm**</span>
+- <span style="color:#D95F02">**treatment arm**</span>
+
+
+The ordinal scale ranges from $0$ to $5$, where $5$ is the worst possible outcome. 
+Suppose that the primary model analyzes the ordinal endpoint at 180 days, but that we also have that same endpoint measured at 30 and at 90 days.
+We will use a longitudinal model to include information from those early visits. 
+
+
+# Ordinal Logistic Regression with Markov Longitudinal Model
+
+
+## Ordinal Regression {#sec-model}
+
+
+Ordinal data are a special case of categorical data where the ordering of the discrete categories matters.
+While categorical data with unordered categories are often modeled with an exchangeable probability model for the latent category probabilities, such an assumption is not desirable in ordinal data. 
+In fact, the ordering of the categories implies a certain degree of correlation, i.e., neighboring categories should be more correlated than distant ones. 
+
+
+A common way to model discrete ordinal data is to use a generative model for a continuous latent variable that is then censored on the set of discrete possible values to yield the ordinal probabilities. 
+We begin by introducing a latent continuous space such as the real line, $X = \mathbb{R}$, with a probability distribution specified by the probability density function (p.d.f.) $\pi(x)$ and associated cumulative distribution function (c.d.f.) $\Pi(x)$.
+In the following, we will use a c.d.f. given by the logistic function, i.e.
+$$\Pi(x) = \frac{1}{1+e^{-x}},$$
+which has the associated p.d.f.
+$$\pi(x)= \frac{e^{-x}}{(1+e^{-x})^{2}}.$$
+This choice yields an **ordinal logistic model**. 
+We could have also chosen a Gaussian probability density, which defines an ordinal probit model.
+In the figures below, we illustrate the c.d.f. and p.d.f. that define the ordinal logistic model.
+
+
+```{r plot_dens, echo = FALSE, out.width = "50%"}
+source('./utils_OR.R')
+cols = brewer.pal(8, 'Dark2')
+
+xgrid = seq(-10, 10, length.out = 100)
+
+ggplot() + 
+  geom_line(aes(x = xgrid, y = logistic_pdf(xgrid)), col = 'black', size = 1) +
+  scale_x_continuous(name = 'x') + 
+  scale_y_continuous(name = TeX("$\\pi(x)$"), expand = c(0.001, 0.001), limits = c(0, 0.35)) + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+ggplot() + 
+  geom_line(aes(x = xgrid, y = inv_logit(xgrid)), col = 'black', size = 1) +
+  scale_x_continuous(name = 'x') + 
+  scale_y_continuous(name = TeX("$\\Pi(x)$"), expand = c(0.001, 0.001), limits = c(0, 1)) + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+Next, to model $K$ ordered classes we partition $X$ into $K$ intervals using $K+1$ cut points, $\{c_{0} = -\infty, c_{1}, \dots, c_{K-1}, c_{K} = +\infty\}$, from which we can compute $K$ ordinal probabilities as differences between the cumulative distribution function evaluated at the cut points, i.e. 
+$$p_{k}= \Pi(c_{k}) - \Pi(c_{k-1}), \ k = 1, \dots, K.$$
+The partitioning of $X$ ensures that the category probabilities sum to one, and the ordering of cut points induces the desired correlations between ordinal probabilities. 
+
+
+The two figures below illustrate how the ordinal probabilities are defined starting from the distribution $\Pi(x)$ (or, equivalently, $\pi(x)$) and the set of cut points $c_{0}, \dots, c_{K}$. 
+Looking at the p.d.f. $\pi(x)$, the ordinal probabilities $p_{k}$ are defined as the area under the curve corresponding to each interval $[c_{k-1}, c_{k}]$.
+We will treat the cutpoints as model parameters that affect on a latent scale the response probabilities.
+For instance, lowering the cut point $c_{k}$ lowers the probability allocated to the $k^{th}$ ordinal while increasing the probability allocated to the neighboring $(k+1)^{st}$ ordinal.
+Because of their fixed values the bounding cut points, $c_{0} = -\infty$ and $c_{K} = +\infty$, are sometimes ignored in practice such that the cut points are defined as only the $K-1$ interior boundaries. 
+
+
+```{r set_pars, echo = FALSE, results = "hide"}
+source('./utils_OR.R')
+
+cols = brewer.pal(8, 'Dark2')
+
+# We use the same setup of the design
+p_ctr_true = c(0.07, 0.2, 0.28, 0.2, 0.15, 0.1) 
+gamma_true = logit(head(cumsum(p_ctr_true), -1)) 
+K = length(gamma_true) + 1
+
+xgrid = seq(-10, 10, length.out = 100)
+```
+
+
+```{r area_ctr, echo = F, fig.dim = c(10, 5), out.width = "100%"}
+ggplot() + 
+  geom_area(aes(x = xgrid, y = logistic_pdf(xgrid)), fill = cols[1], alpha = 0.75) + 
+  geom_segment(aes(x = gamma_true, y = rep(0, K - 1), xend = gamma_true, yend = logistic_pdf(gamma_true)), lty = 2, size = 1, col = 'white') + 
+  geom_line(aes(x = xgrid, y = logistic_pdf(xgrid)), col = cols[1], size = 1) +
+  geom_text(aes(x = c(gamma_true[1] - 0.5, head(gamma_true, K - 2) + diff(gamma_true) / 2, tail(gamma_true, 1) + 0.5), y = rep(0.01, K), label = as.character(p_ctr_true)), col = 'white', size = 5) + 
+  geom_text(aes(x = c(gamma_true[1] - 0.5, head(gamma_true, K - 2) + diff(gamma_true) / 2, tail(gamma_true, 1) + 0.5), y = rep(0.025, K), label = TeX(sprintf("$p_{\\%s}$", 1:K), output = "character")), parse = TRUE, col = 'white', size = 5) + 
+  scale_x_continuous(name = '', limits = c(-10, 11), breaks = c(-10, gamma_true, 10), labels = c(TeX("$c_{0} = -\\infty$"), TeX(sprintf("$c_{\\%s}$", as.numeric(1:(K-1)))), TeX("$c_{6} = +\\infty$"))) +
+  scale_y_continuous(name = TeX("$\\pi(x)$"), expand = c(0.0001, 0.0001), limits = c(-0.02, 0.35)) + 
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+ggplot() + 
+  geom_area(aes(x = xgrid, y = inv_logit(xgrid)), fill = cols[1], alpha = 0.75) + 
+  geom_segment(aes(x = gamma_true, y = rep(0, K - 1), xend = gamma_true, yend = rep(1, K - 1)), lty = 2, size = 1, col = 'white') + 
+  geom_segment(aes(x = gamma_true, y = inv_logit(gamma_true), xend = rep(10, K - 1), yend = inv_logit(gamma_true)), lty = 2, size = 1, col = 'white') + 
+  geom_segment(aes(x = -10:(-10 + K - 1), y = c(0, inv_logit(gamma_true)), xend = -10:(-10 + K - 1), yend = c(inv_logit(gamma_true), 1)), arrow = arrow(length = unit(0.20, "cm"), ends = 'both'), size = 1, color = cols[1]) + 
+  geom_text(aes(x = -10:(-10 + K - 1) + 2, y = (c(0, head(cumsum(p_ctr_true), K - 1)) + cumsum(p_ctr_true)) / 2, 
+                label = TeX(sprintf("$p_{\\%s} = \\Pi(c_{\\%s}) - \\Pi(c_{\\%s})$", 1:K, 1:K, 0:(K-1)), output = "character")), parse = TRUE, col = cols[1], size = 5) + 
+  geom_line(aes(x = xgrid, y = inv_logit(xgrid)), col = cols[1], size = 1) +
+  geom_text(aes(x = rep(11.075, 2), y = c(0, 1), label = c(TeX("$\\Pi(c_{0}) = 0$", output = "character"), TeX("$\\Pi(c_{6}) = 1$", output = "character"))), parse = TRUE, col = cols[1], size = 5) +
+  geom_text(aes(x = rep(10.75, K - 1), y = inv_logit(gamma_true), label = TeX(sprintf("$\\Pi(c_{\\%s})$", 1:(K-1)), output = "character")), parse = TRUE, col = cols[1], size = 5) +
+  scale_x_continuous(name = '', limits = c(-10, 11), breaks = c(-10, gamma_true, 10), labels = c(TeX("$c_{0} = -\\infty$"), TeX(sprintf("$c_{\\%s}$", as.numeric(1:(K-1)))), TeX("$c_{6} = +\\infty$"))) +
+  scale_y_continuous(name = TeX("$\\Pi(x)$"), expand = c(0.0001, 0.0001), limits = c(-0.06, 1.05)) + 
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+To model observed counts in each category, we can complete the model with a Multinomial observational model 
+$$n_{1}, \dots, n_{K} \mid (p_{1}, \dots, p_{K}) \sim \text{Multinomial} (p_{1}, \dots, p_{K}).$$
+
+
+To include a treatment effect that differentiates the ordinal probabilties between arms, we introduce a latent parameter $\theta$ that can "drag" the probability masses to higher or lower ordinals.
+The effect of this parameter is usually taken as a linear effect on the latent scale, i.e. by translating *all* the cutpoints from $c_{j}$ to $c_{j} + \theta$.
+When $\theta$ is positive this translation is equivalent to shifting the latent probability density function to smaller values, concentrating the integrated probabilities to smaller ordinals as desired. 
+Similarly, when $\theta$ is negative this translation is equivalent to shifting the latent probability density function to larger values, concentrating the integrated probabilities to larger ordinals.
+
+
+Consequently, in the presence of a treatment effect the ordinal probabilities become
+$$p_{k} = \Pi(c_{k} + \theta) - \Pi(c_{k−1} + \theta).$$
+Using the properties of the logistic function, we can rewrite the probabilities as 
+$$p_{k} = \Pi(- c_{k−1} - \theta) - \Pi(- c_{k} - \theta),$$
+which is for example how the `ordered_logistic_lpmf(0, c + theta)` function is defined in the [Stan functions reference guide](https://mc-stan.org/docs/2_29/functions-reference/ordered-logistic-distribution.html).
+
+
+
+
+```{r transform_p, echo = FALSE, results = "hide"}
+OR_true = 1.8
+p_trt_true = OR_transform(p_ctr_true, OR_true)
+gamma_trt = logit(head(cumsum(p_trt_true), -1))
+```
+
+
+For instance, $e^{\theta} = `r OR_true` > 1$ has the effect of moving the cutpoints to larger values and, hence, the probability masses towards smaller values, which in our example corresponds to patient benefit (smaller values being more beneficial to patients).
+Below are the updated cutpoints and the resulting ordinal probabilities. 
+
+
+```{r area_trt, echo = F, fig.dim = c(10, 5), out.width = "100%"}
+ggplot() + 
+  geom_area(aes(x = xgrid, y = logistic_pdf(xgrid)), fill = cols[2], alpha = 0.75) + 
+  geom_segment(aes(x = gamma_trt, y = rep(0, K - 1), xend = gamma_trt, yend = logistic_pdf(gamma_trt)), lty = 2, size = 1, col = 'white') + 
+  geom_line(aes(x = xgrid, y = logistic_pdf(xgrid)), col = cols[2], size = 1) +
+  geom_text(aes(x = c(gamma_trt[1] - 0.5, head(gamma_trt, K - 2) + diff(gamma_trt) / 2, tail(gamma_trt, 1) + 0.5), y = rep(0.01, K), label = as.character(p_trt_true)), col = 'white', size = 5) + 
+  geom_text(aes(x = c(gamma_trt[1] - 0.5, head(gamma_trt, K - 2) + diff(gamma_trt) / 2, tail(gamma_trt, 1) + 0.5), y = rep(0.025, K), label = TeX(sprintf("$p_{\\%s}$", 1:K), output = "character")), parse = TRUE, col = 'white', size = 5) + 
+  scale_x_continuous(name = '', limits = c(-10, 11), breaks = c(-10, gamma_trt, 10), labels = c(TeX("$c_{0} = -\\infty$"), TeX(sprintf("$c_{\\%s}$", as.numeric(1:(K-1)))), TeX("$c_{6} = +\\infty$"))) +
+  scale_y_continuous(name = TeX("$\\pi(x)$"), expand = c(0.0001, 0.0001), limits = c(-0.02, 0.35)) + 
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+ggplot() + 
+  geom_area(aes(x = xgrid, y = inv_logit(xgrid)), fill = cols[2], alpha = 0.75) + 
+  geom_segment(aes(x = gamma_trt, y = rep(0, K - 1), xend = gamma_trt, yend = rep(1, K - 1)), lty = 2, size = 1, col = 'white') + 
+  geom_segment(aes(x = gamma_trt, y = inv_logit(gamma_trt), xend = rep(10, K - 1), yend = inv_logit(gamma_trt)), lty = 2, size = 1, col = 'white') + 
+  geom_segment(aes(x = -10:(-10 + K - 1), y = c(0, inv_logit(gamma_trt)), xend = -10:(-10 + K - 1), yend = c(inv_logit(gamma_trt), 1)), arrow = arrow(length = unit(0.20, "cm"), ends = 'both'), size = 1, color = cols[2]) + 
+  geom_text(aes(x = -10:(-10 + K - 1) + 2, y = (c(0, head(cumsum(p_trt_true), K - 1)) + cumsum(p_trt_true)) / 2, 
+                label = TeX(sprintf("$p_{\\%s} = \\Pi(c_{\\%s}) - \\Pi(c_{\\%s})$", 1:K, 1:K, 0:(K-1)), output = "character")), parse = TRUE, col = cols[2], size = 5) + 
+  geom_line(aes(x = xgrid, y = inv_logit(xgrid)), col = cols[2], size = 1) +
+  geom_text(aes(x = rep(11.075, 2), y = c(0, 1), label = c(TeX("$\\Pi(c_{0}) = 0$", output = "character"), TeX("$\\Pi(c_{6}) = 1$", output = "character"))), parse = TRUE, col = cols[2], size = 5) +
+  geom_text(aes(x = rep(10.75, K - 1), y = inv_logit(gamma_trt), label = TeX(sprintf("$\\Pi(c_{\\%s})$", 1:(K-1)), output = "character")), parse = TRUE, col = cols[2], size = 5) +
+  scale_x_continuous(name = '', limits = c(-10, 11), breaks = c(-10, gamma_trt, 10), labels = c(TeX("$c_{0} = -\\infty$"), TeX(sprintf("$c_{\\%s}$", as.numeric(1:(K-1)))), TeX("$c_{6} = +\\infty$"))) +
+  scale_y_continuous(name = TeX("$\\Pi(x)$"), expand = c(0.0001, 0.0001), limits = c(-0.06, 1.05)) + 
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+```
+
+
+
+## Longitudinal Model {#sec-longitudinal}
+
+
+At the time of each analysis there will be subjects who have an unknown 180-day response value. 
+We use the 30-day and 90-day response values as possibly predictive of the 180-day response, allowing subjects with these earlier measurements to be included in the analyses of the 180-day measurement. 
+The longitudinal model allows for learning the relationship between the 30-day and 90-day response values as the accruing empirical data is used to determine the strength of the association between the values for each treatment group. 
+Analyses of the 180-day response values are performed with multiple imputation from the longitudinal model for patients with an unknown 180-day response value.  
+
+
+In the case of ordinal outcomes, a possible strategy is to assume a Markov structure for the transition between visits, i.e., assume that the response value at a certain visit only depends on the response value at the previous visit. 
+The initial 30-day responses are assigned Dirichlet distributions.
+In particular, we assume a Dirichlet prior for the vector of probabilities $\mathbf{p}^{(30)}$ corresponding to each response value at 30 days for each treatment arm separately, i.e.,
+$$
+\begin{aligned}
+&(p_{ctr,0}^{(30)}, \dots, p_{ctr,5}^{(30)} ) \sim \text{Dirichlet}(\beta_{0}, \dots, \beta_{5}), 
+\\
+&(p_{trt,0}^{(30)}, \dots, p_{trt,5}^{(30)} ) \sim \text{Dirichlet}(\beta_{0}, \dots, \beta_{5}).
+\end{aligned}
+$$
+
+
+
+The transitions between states (30-day to 90-day and 90-day to 180-day) are also assigned Dirichlet distributions.
+In particular, for each state $k$ at day 30 we place a Dirichlet prior distribution on the vector of probabilities for that state to the 90-day state $j$, $j = 0, \dots, 5$ under each treatment group separately:
+$$
+\begin{aligned}
+&(p_{ctr,k,0}^{(30,90)}, \dots, p_{ctr,k,5}^{(30,90)} ) \sim \text{Dirichlet}(\alpha_{k,0}, \dots, \alpha_{k,5}), \quad k = 0, \dots, 5,
+\\
+&(p_{trt,k,0}^{(30,90)}, \dots, p_{trt,k,5}^{(30,90)} ) \sim \text{Dirichlet}(\alpha_{k,0}, \dots, \alpha_{k,5}), \quad k = 0, \dots, 5.
+\end{aligned}
+$$
+Likewise, for each state $j$ at 90 days we place a Dirichlet prior distribution on the vector of probabilities for that state to the 180-day state $\ell$, $\ell = 0, \dots, 5$ under each treatment group separately:
+$$
+\begin{aligned}
+&(p_{ctr,j,0}^{(90, 180)}, \dots, p_{ctr,j,5}^{(90, 180)} ) \sim \text{Dirichlet}(\alpha_{j,0}, \dots, \alpha_{j,5}), \quad j = 0, \dots, 5,
+\\
+&(p_{trt,j,0}^{(90, 180)}, \dots, p_{trt,j,5}^{(90, 180)} ) \sim \text{Dirichlet}(\alpha_{j,0}, \dots, \alpha_{j,5}), \quad j = 0, \dots, 5.
+\end{aligned}
+$$
+
+
+These prior distributions are straightforward to update.
+The corresponding posteriors for the initial states are 
+$$
+\begin{aligned}
+&(p_{ctr,0}^{(30)}, \dots, p_{ctr,5}^{(30)} ) \mid (N_{ctr,0}^{(30)}, \dots, N_{ctr,5}^{(30)}) \sim \text{Dirichlet}(\beta_{0} + N_{ctr,0}^{(30)}, \dots, \beta_{5} + N_{ctr,5}^{(30)}), 
+\\
+&(p_{trt,0}^{(30)}, \dots, p_{trt,5}^{(30)} ) \mid (N_{trt,0}^{(30)}, \dots, N_{trt,5}^{(30)}) \sim \text{Dirichlet}(\beta_{0} + N_{trt,0}^{(30)}, \dots, \beta_{5} + N_{trt,5}^{(30)}),
+\end{aligned}
+$$
+where $N_{trt,k}^{(30)}$ is the number of subjects in the treatment arm that had 30-day response value equal to $k$.
+The posteriors for the 30 to 90 days transitions are 
+$$
+\begin{aligned}
+&(p_{ctr,k,0}^{(30,90)}, \dots, p_{ctr,k,5}^{(30,90)} ) \mid (N_{ctr,k,0}^{(30,90)}, \dots, N_{ctr,k,5}^{(30,90)}) \sim \text{Dirichlet}(\alpha_{k,0} + N_{ctr,k,0}^{(30,90)}, \dots, \alpha_{k,5} + N_{ctr,k,5}^{(30,90)}), \quad k = 0, \dots, 5,
+\\
+&(p_{trt,k,0}^{(30,90)}, \dots, p_{trt,k,5}^{(30,90)} ) \mid (N_{trt,k,0}^{(30,90)}, \dots, N_{trt,k,5}^{(30,90)}) \sim \text{Dirichlet}(\alpha_{k,0} + N_{trt,k,0}^{(30,90)}, \dots, \alpha_{k,5} + N_{trt,k,5}^{(30,90)}), \quad k = 0, \dots, 5,
+\end{aligned}
+$$
+where $N_{trt,k,j}^{(30,90)}$ is the number of subjects in the treatment arm that transitioned from 30-day state equal to $k$ to 30-day state equal to $j$.
+The posteriors for the 90 to 180 days transitions are 
+$$
+\begin{aligned}
+&(p_{ctr,j,0}^{(90, 180)}, \dots, p_{ctr,j,5}^{(90, 180)} ) \mid (N_{ctr,j,0}^{(90, 180)}, \dots, N_{ctr,j,5}^{(90, 180)}) \sim \text{Dirichlet}(\alpha_{j,0} + N_{ctr,j,0}^{(90, 180)}, \dots, \alpha_{j,5} + N_{ctr,j,5}^{(90, 180)}), \quad j = 0, \dots, 5,
+\\
+&(p_{trt,j,0}^{(90, 180)}, \dots, p_{trt,j,5}^{(90, 180)} ) \mid (N_{trt,j,0}^{(90, 180)}, \dots, N_{trt,j,5}^{(90, 180)}) \sim \text{Dirichlet}(\alpha_{j,0} + N_{trt,j,0}^{(90, 180)}, \dots, \alpha_{j,5} + N_{trt,j,5}^{(90, 180)}), \quad j = 0, \dots, 5,
+\end{aligned}
+$$
+where $N_{trt,j,\ell}^{(90,180)}$ is the number of subjects in the treatment arm that transitioned from 90-day state equal to $j$ to 180-day state equal to $\ell$.
+
+
+
+# Data Generation
+
+
+To demonstrate how we can make inference on this model, we first need to simulate some data.
+
+
+Let us load some useful functions and create the quantities corresponding to the underlying true model parameter.
+
+
+<details>
+<summary>Click to explore the functions in `utils_OR.R`.</summary>
+```{r print_fcts, echo = FALSE}
+writeLines(readLines("utils_OR.R"))
+```
+</details>
+
+
+We define the true control ordinal probabilities `p_ctr_true` and the true odds ratio `OR_true`. 
+These two quantities imply the true treatment ordinal probabilities `p_trt_true` that can be calculated with the function `OR_transform()`.
+```{r setup}
+source('./utils_OR.R')
+
+cols = brewer.pal(8, 'Dark2')
+key_trt = c('Control', 'Treatment')
+data_seed = 4321
+weeks_to_months = 6/26
+
+p_ctr_true = c(0.07, 0.2, 0.28, 0.2, 0.15, 0.1) # true control ordinal probabilities
+K = length(p_ctr_true) # number of ordinal categories (from 0 to K-1)
+OR_true = 1.8 # true odds ratio
+p_trt_true = OR_transform(p_ctr_true, OR_true) # true implied treatment ordinal probabilities
+```
+
+
+We first have to generate the allocation to each arm. 
+In our example, we use an allocation 1:1 in blocks of 2 so that at the analysis sample size we have a perfectly balanced allocation.
+```{r randlist}
+# Generate the data
+set.seed(data_seed)
+N = 300
+dose_label = sample(c(rep(0, N/2), rep(1, N/2)))
+TRTPN = factor(key_trt[dose_label + 1], levels = key_trt)
+```
+
+
+We can also setup the accrual parameters. 
+For example, consider a peak rate accrual of 12 patients per month with a 24-month ramp-up period.
+```{r accrual_profile}
+# Accrual profile
+accr_profile = NULL
+accr_profile$peak_rate = 12 * weeks_to_months # in weeks
+accr_profile$ramp_up = 24 / weeks_to_months # in weeks
+```
+
+
+To generate the data, we will first generate the 180-day outcomes using the class probabilities that we just defined. 
+Afterwards, we generate previous visits backwards according to the transition probabilities defined below in `P_tr`.
+This matrix has on each row the probabilities of the response class at the previous visits given the response at the current visit.
+```{r}
+# Transition probabilities
+P_tr = matrix(c(0.7, 0.3, 0, 0, 0, 0,
+                0, 0.2, 0.4, 0.4, 0, 0,
+                0, 0, 0.34, 0.66, 0, 0,
+                0, 0, 0.22, 0.67, 0.11, 0,
+                0, 0, 0, 0.71, 0.29, 0,
+                0, 0, 0, 0, 0.3, 0.7),
+              K, K, byrow = T)
+
+# Show P_tr in output
+rownames(P_tr) = as.character(0:(K-1))
+P_tr %>% 
+  knitr::kable(booktabs = TRUE, 
+               col.names = as.character(0:(K-1)),
+               caption = 'Probability of response values at previous visit
+               given score at current visit.') %>% 
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+
+Let us generate the data with the function `sample_long_ordinal_data()`. 
+```{r sample_data, out.width = "100%"}
+set.seed(data_seed)
+data = sample_long_ordinal_data(N = N,
+                                TRTPN,
+                                p_ctr_true = p_ctr_true,
+                                p_trt_true = p_trt_true,
+                                P_tr,
+                                T_max = 0,
+                                accr_profile = accr_profile,
+                                t0 = 0)
+```
+
+
+We can visualize the data we just generated with a series of plots.
+For example, a stacked barplot of the response categories under both treatment arms can be useful to see the empirical cumulative distribution of the response at the final visit.
+```{r stacked_barplot, out.width = "100%"}
+data %>%
+  filter(OTC180FL == 1) %>%
+  group_by(TRTPN, RESP180) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  right_join(list(
+    TRTPN = levels(TRTPN),
+    RESP180 = 0:(K-1)) %>%
+      cross_df(),
+    by = c('TRTPN', 'RESP180')) %>%
+  mutate(TRTPN = factor(TRTPN),
+         n = ifelse(is.na(n), 0, n),
+         freq = ifelse(is.na(freq), 0, freq)) %>%
+  arrange(TRTPN, RESP180) %>%
+  group_by(TRTPN) %>%
+  mutate(freq_sum = cumsum(freq)) %>%
+  ggplot() +
+  geom_bar(aes(x = freq, y = TRTPN, fill = factor(RESP180, levels = 0:(K-1))), 
+           position = position_stack(reverse = TRUE), stat = 'identity') +
+  labs(x = 'Proportion of subjects',
+       y = '',
+       title = 'Frequency of the response at 180 days') +
+  scale_fill_brewer(name = 'Response', palette = "RdBu", direction=-1) +
+  theme(legend.position = "top") +
+  guides(fill = guide_legend(nrow = 1))
+```
+
+
+Equivalently, a simple barplot shows the empirical distribution of the response classes at the final visit.
+```{r barplot, out.width = "100%"}
+data %>%
+  filter(OTC180FL == 1) %>%
+  group_by(TRTPN, RESP180) %>%
+  summarise(n = n()) %>%
+  mutate(freq = n / sum(n)) %>%
+  right_join(list(
+    TRTPN = levels(TRTPN),
+    RESP180 = 0:(K-1)) %>%
+      cross_df(),
+    by = c('TRTPN','RESP180')) %>%
+  mutate(TRTPN = factor(TRTPN),
+         n = ifelse(is.na(n), 0, n),
+         freq = ifelse(is.na(freq), 0, freq)) %>%
+  arrange(TRTPN, RESP180) %>%
+  group_by(TRTPN) %>%
+  mutate(freq_sum = cumsum(freq),
+         imp_month_plot = ifelse(TRTPN == key_trt[1], RESP180, RESP180)) %>%
+  ggplot() +
+  geom_step(aes(x = imp_month_plot, y = freq_sum, col = TRTPN), size = 1) +
+  geom_bar(aes(fill = TRTPN, col = TRTPN, y = freq, x = RESP180),
+           width = 0.6, position = position_dodge(width = 0.7), stat = "identity") +
+  labs(x = 'Proportion of subjects',
+       y = '',
+       title = 'Frequency of the response at 180 days') +
+  scale_x_continuous(breaks = 0:(K-1)) +
+  scale_colour_brewer(name = '', palette = 'Set2') +
+  scale_fill_brewer(name = '', palette = 'Set2') +
+  theme(legend.position = "top")
+```
+
+
+We can also count the number of transitions from each pairs of response variables and show them for each group separately. 
+This shows what transitions are most common from each of the observed states.
+The two figures below are color shaded according to the probability of transitioning from the current state to the possible future states.
+Note that the color shading is normalized in each row, i.e., it denotes the probability of transitioning to states given each fixed current state.
+```{r plot_counts_ctr, fig.height = 5, fig.width = 10}
+# Set prior counts to 0 so that only the empirical transitions are 
+# counted
+pr_counts = list(beta = rep(0, K),
+                 alpha = matrix(c(0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0,
+                                  0, 0, 0, 0, 0, 0),
+                                K, K, byrow = T))
+
+# Updated parameters for the longitudinal model
+imp_pars = data %>%
+  select(TRTPN,
+         OTC30FL, RESP30,
+         OTC90FL, RESP90,
+         OTC180FL, RESP180) %>%
+  get_imputation_pars(pr_counts, key_trt)
+
+# Plot the number of transitions under control group
+plt_ctr = plot_Ptrans(list(p30 = imp_pars$p30_ctr,
+                           p90 = imp_pars$p90_ctr,
+                           p180 = imp_pars$p180_ctr), 
+                      digits = 0, 
+                      palette = 'Greens')
+```
+
+
+```{r plot_counts_trt, fig.height = 5, fig.width = 10}
+# Plot the number of transitions under treatment group
+plt_trt = plot_Ptrans(list(p30 = imp_pars$p30_trt,
+                           p90 = imp_pars$p90_trt,
+                           p180 = imp_pars$p180_trt), 
+                      digits = 0)
+```
+
+
+A more comprehensive visualization for ordinal outcomes that shows simultaneously the distribution of the responses at each visit and the transitions between visits is the alluvial plot below. 
+```{r alluvial, out.width = "100%"}
+data %>%
+  group_by(TRTPN) %>% 
+  count(RESP30, RESP90, RESP180) %>% 
+  mutate(id = row_number()) %>% 
+  pivot_longer(cols = contains('RESP')) %>% 
+  mutate(value = factor(value, levels = c(NA, as.character(0:(K-1))), exclude = NULL), 
+         name = factor(name, levels = c('RESP30', 'RESP90', 'RESP180'))) %>% 
+  group_by(name) %>% 
+  ggplot(aes(x = name, y = n, stratum = value, fill = value, alluvium = id)) +
+  ggalluvial::geom_stratum(alpha = 1) +
+  ggalluvial::geom_flow() +
+  facet_wrap(~ TRTPN) + 
+  scale_fill_brewer(name = 'Response', breaks = c(NA, as.character(0:(K-1))), labels = c('Missing', as.character(0:(K-1))), palette = "RdBu", direction = -1, na.value = 'grey75') + 
+  scale_x_discrete(name = '', labels = c('30 Days', '90 Days', '180 Days'), expand = c(0.1, 0.1)) +
+  scale_y_continuous(name = 'Proportion of patients', expand = c(0.01, 0.01))
+```
+
+
+We can also inspect the accrual of the trial that we just simulated.
+```{r accrual, out.width = "100%"}
+data %>%
+  mutate(TIMESINCERAND = as.numeric(difftime(RANDDT, min(RANDDT), units = 'weeks'))) %>%
+  arrange(TIMESINCERAND) %>%
+  mutate(Subject = row_number(),
+         EXPACCR = Lambda(t = TIMESINCERAND, peak_rate = accr_profile$peak_rate,
+                          ramp_up = accr_profile$ramp_up)) %>%
+  select(TIMESINCERAND, Subject, EXPACCR) %>%
+  ggplot() +
+  geom_step(aes(x = TIMESINCERAND, y = Subject, col = 'observed'), size = 1) +
+  geom_line(aes(x = TIMESINCERAND, y = EXPACCR,
+                col = sprintf('%.2f per week', accr_profile$peak_rate)),
+            size = 1) +
+  scale_x_continuous(expand = c(0, 0)) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(x = 'Weeks since start of accrual',
+       y = 'Cumulative number of subjects',
+       title = 'Observed vs simulated accrual') +
+  scale_color_brewer(name = '', palette = 'Set1') +
+  theme(legend.position = "top")
+```
+
+
+# Model Fitting
+
+
+## Frequentist Model Fitting
+
+
+The first modeling strategy to fit the data that we just simulated is a frequentist ordinal logistic regression on the 180-day response values.
+This model uses information on completers only and excludes patients that are still in follow-up.
+
+
+The ordinal regression can be fit using the `MASS` package in `R`. 
+```{r fit_freq, out.width = "100%"}
+# Fit the frequentist version
+fit_freq = MASS::polr(factor(RESP180) ~ TRTPN, data = data, Hess = TRUE)
+fit_summ = summary(fit_freq)
+```
+
+
+Be aware that the `polr()` function uses 
+$$\text{logit} \{P(Y \leq k \mid x)\} = c_{k} - x\theta,$$
+which is a slightly different parametrization from the one described in Section \@ref(sec-model).
+Thus, to recover the odds ratio we need to flip the sign of the coefficient returned to the `polr()` function, as done below. 
+```{r post_frequentist, out.width = "100%"}
+# Compare model parameters with true values
+log(OR_true); - fit_summ$coefficients[1,1]
+logit(head(cumsum(p_ctr_true), -1)); as.numeric(fit_summ$coefficients[-1,1])
+```
+As one can see, the model seems to be close to the true values for both the odds ratio and for the latent cutpoints.
+
+
+
+Suppose that for a trial success is demonstrated if the one-sided p-value corresponding to the test that the common odds ratio (OR), $e^{\theta}$, is greater than $1$ is less than or equal to $0.02$.
+We can calculate such p-value with the code below.
+```{r test_frequentist, out.width = "100%"}
+obs_OR = exp(- fit_summ$coefficients[1,1]) # observed OR
+t_val = - fit_summ$coefficients[1,1] / fit_summ$coefficients[1,2] # t value for the test
+dof = fit_freq$df.residual # degrees of freedom
+
+pval = 1 - pt(q = t_val, df = dof)
+pval; pval < 0.02
+```
+
+
+## Bayesian Model Fitting
+
+
+An alternative model is a Bayesian ordinal logistic regression on the 180-day response values.
+This model also uses information on completers only and excludes patients that are still in follow-up.
+
+
+### Prior Elicitation 
+
+
+We need to set priors on all parameters of interest, i.e., the internal cutpoints and the odds ratio.  
+Unless response classes are sparse, i.e., there are empty classes, a uniform prior on the internal cutpoints suffices.
+We can also use a uniform prior on the log odds ratio.
+
+
+Priors that can be used for the longitudinal model are discussed in Section \@ref(sec-pred).
+
+
+### Posterior Sampling
+
+
+The STAN model is the following:
+```{r print_model}
+writeLines(readLines("./ord_logistic.stan"))
+```
+The function `ordered_logistic_lpmf(0, c + X[i] * theta)` is equivalent to the class probabilities $p_{k} = \Pi(- c_{k−1} - \theta) - \Pi(- c_{k} - \theta)$.
+
+
+We can now run the model and put the results (MCMC chains) into a matrix whose columns correspond to the different model parameters $\theta, c_{1}, \dots, c_{K-1}$.
+```{r run_model, out.width = "100%"}
+# Choose the seed
+model_seed = 12345
+
+# STAN data
+stan_data <- list(N = nrow(data %>% filter(OTC180FL == 1)),
+                  D = K, 
+                  X = as.numeric(data %>% filter(OTC180FL == 1) %>% pull(TRTPN)) - 1, 
+                  y = data %>% filter(OTC180FL == 1) %>% pull(RESP180) + 1
+)
+
+# Run STAN model
+n_iters = 5000
+burnin = 2500
+n_thin = 2
+n_chains = 4
+samp_size = n_chains * (n_iters - burnin) / n_thin
+set.seed(model_seed)
+fit <- stan(file = 'ord_logistic.stan',
+            data = stan_data,
+            chains = n_chains,
+            warmup = burnin,
+            iter = n_iters,
+            thin = n_thin,
+            seed = model_seed) %>%
+  extract()
+
+# Extract model output
+samples = fit$theta %>%
+  cbind(fit$c) %>%
+  colnames_inplace(c('theta', sprintf('c[%s]', 1:(K - 1))))
+```
+
+
+### MCMC Diagnostics
+
+
+The traceplots for the model parameters do not show any concerning behavior.  
+
+
+```{r traceplots, out.width= "100%"}
+# Traceplots
+mcmc_trace(samples, facet_args = list(labeller = ggplot2::label_parsed, 
+                                      ncol = 2))
+```
+
+
+The total sample size of the chains was `r samp_size`, and the effective sample sizes are very close to their optimal values. 
+
+
+```{r ess}
+# Effective sample size
+print(round(coda::effectiveSize(samples)))
+```
+
+
+# Posterior Checks 
+
+
+Once we have the MCMC draws, we can calculate any functional of interest, e.g. posterior mean, median, quantiles, etc., and check that the estimated parameters are similar to the ground truth. 
+```{r post_bayesian, out.width = "100%"}
+log(OR_true); mean(samples[,1])
+logit(head(cumsum(p_ctr_true), -1)); as.numeric(colMeans(samples[,2:K]))
+```
+
+
+We can also illustrate the posterior distributions of the cutpoints.
+```{r post_cutpoints, out.width = "100%"}
+# Show the posterior distributions of the cutpoints 
+samples %>% 
+  as_tibble %>% 
+  select(contains('c[')) %>% 
+  pivot_longer(cols = everything(), names_to = 'cutpoint') %>% 
+  ggplot() + 
+  geom_histogram(aes(x = value, y = ..density.., fill = cutpoint), 
+                 col = 'white', alpha = 0.4) +
+  scale_x_continuous(name = TeX('$c_{j}$')) + 
+  scale_fill_brewer(name = '', palette = 'Dark2', labels = sprintf('j = %i', 1:(K-1))) + 
+  theme(legend.position = 'top') + 
+  guides(fill = guide_legend(nrow = 1))
+```
+
+
+An effective way to show the predictive inference from the model fit is to show the posterior distributions of the class probabilities under control and treatment group. 
+```{r post_probs_ctr, out.width = "100%"}
+# Show the posterior distribution of the class probabilities under the control group
+p_ctr_post = cbind(rep(0, samp_size), inv_logit(samples[,2:K]), rep(1, samp_size)) %>% 
+  apply(1, diff) %>% 
+  t() %>% 
+  colnames_inplace(sprintf('p_%s', 0:(K - 1)))
+p_ctr_est = p_ctr_post %>% 
+  as_tibble %>% 
+  pivot_longer(cols = everything(), names_to = 'param') %>% 
+  group_by(param) %>% 
+  summarize(mean = mean(value), 
+            low = quantile(value, 0.025), 
+            upp = quantile(value, 0.975)) %>% 
+  mutate(true = p_ctr_true, 
+         param = as.numeric(str_remove(param, 'p_')))
+
+p_ctr_est %>% 
+  rbind(tail(p_ctr_est, 1) %>% mutate(param = param + 1)) %>% 
+  ggplot() + 
+  geom_step(aes(x = param - 0.5, y = mean), col = brewer.pal(8, 'Dark2')[1], size = 1) + 
+  pammtools::geom_stepribbon(aes(x = param - 0.5, ymin = low, ymax = upp), fill = brewer.pal(8, 'Dark2')[1], alpha = 0.3) + 
+  geom_step(aes(x = param - 0.5, y = true)) + 
+  scale_y_continuous(name = '', expand = c(0, 0), limits = c(0, max(p_ctr_est$upp) + 0.1)) + 
+  scale_x_continuous(name = '', breaks = 0:(K-1), labels = TeX(sprintf("$p_{\\%s}$", 0:(K-1))), expand = c(0, 0))
+```
+
+
+
+```{r post_probs_trt, out.width = "100%"}
+# Show the posterior distribution of the class probabilities under the treatment group
+p_trt_post = cbind(rep(0, samp_size), inv_logit(samples[,2:K] + samples[,1]), rep(1, samp_size)) %>% 
+  apply(1, diff) %>% 
+  t() %>% 
+  colnames_inplace(sprintf('p_%s', 0:(K - 1)))
+p_trt_est = p_trt_post %>% 
+  as_tibble %>% 
+  pivot_longer(cols = everything(), names_to = 'param') %>% 
+  group_by(param) %>% 
+  summarize(mean = mean(value), 
+            low = quantile(value, 0.025), 
+            upp = quantile(value, 0.975)) %>% 
+  mutate(true = p_trt_true, 
+         param = as.numeric(str_remove(param, 'p_')))
+
+p_trt_est %>% 
+  rbind(tail(p_trt_est, 1) %>% mutate(param = param + 1)) %>% 
+  ggplot() + 
+  geom_step(aes(x = param - 0.5, y = mean), col = brewer.pal(8, 'Dark2')[2], size = 1) + 
+  pammtools::geom_stepribbon(aes(x = param - 0.5, ymin = low, ymax = upp), fill = brewer.pal(8, 'Dark2')[2], alpha = 0.3) + 
+  geom_step(aes(x = param - 0.5, y = true)) + 
+  scale_y_continuous(name = '', expand = c(0, 0), limits = c(0, max(p_trt_est$upp) + 0.1)) + 
+  scale_x_continuous(name = '', breaks = 0:(K-1), labels = TeX(sprintf("$p_{\\%s}$", 0:(K-1))), expand = c(0, 0))
+```
+The black lines represent the underlying truth, the colored lines and shaded areas are the mean and $95\%$ credible interval from the Bayesian model.
+
+
+# Predictive Probabilities {#sec-pred}
+
+
+Let's now use a model that includes information from the previous visits of non-completers.
+
+
+As before, suppose that we designed a trial with maximum sample size $n_{max} = 500$ where final success is demonstrated if the one-sided p-value corresponding to the hypothesis that the common odds ratio (OR), $e^{\theta}$, is greater than $1$ is less than or equal to $0.02$.
+This threshold value is chosen based on the early interim analyses to stop for predicted success to maintain an overall one-sided type I error rate of $0.025$.   
+
+
+At each interim, we only observe partial data, i.e., not all subjects are completers. 
+For instance, in the data we simulated we have $n = 300$ randomized subjects and not all of them are completers.
+We can use predictive probabilities of success to determine if the trial should stop for early success or futility at the pre-planned interim analyses.
+The predictive probability of success at the current sample size ($PP_{n}$) combines the observed completers with the uncertainty in the currently enrolled patients that have not completed yet.  
+The predictive probability of success at the maximum sample size ($PP_{max}$) combines the observed completers with the uncertainty in the currently enrolled patients that have not completed yet and the uncertainty in the future enrolled patients.    
+
+
+The predictive probabilities are calculated based on the longitudinal model described in Section \@ref(sec-longitudinal) by the following procedure:
+
+1. For subjects without 30 day data, whether they have been enrolled (current sample size) or not (future patients): simulate 30-day response from posterior distribution of the response at 30 days
+2. For subjects without 90 day data: simulate 90-day response from posterior distribution of the response at 90 days given the observed or above predicted 30-day data and treatment arm
+3. For subjects without 180 day data: simulate 180-day response from posterior distribution of the response at 180 days given the observed or above predicted 90-day data and treatment arm
+4. Determine if the if the completed (observed and predicted) data at the current sample size and if the completed (observed and predicted) data at the maximum sample size lead to a successful trial (p-value corresponding to the test that $\text{OR} > 1$ is less than or equal to $0.02$)
+5. Repeat steps 1-4 $1000$ times and report the proportion of times that the completed data at current and maximum sample size result in a successful trial, i.e., $PP_{n}$ and $PP_{max}$, respectively 
+
+
+We will use the function `fit_model()` illustrated below to calculate the predictive probability of success at the current sample size and at the maximum sample size. 
+```{r print_pp_model}
+print(fit_model)
+```
+
+
+The only remaining thing to do is to discuss the prior hyperparameters for the longitudinal model used in the imputation for the predictive probability calculations.
+
+
+For the prior on the 30-day responses, we choose $\beta_{k} = 1$ for $k = 0, \dots, 5$ and we use the same prior by treatment arm. 
+Note, however, that the probability vector has different posterior distributions by treatment arm.  
+Each prior weight can be interpreted as the number of patients that have observed that 30-day response value. 
+We assume a-priori that each response value is equally likely with a total of $6$ patients worth of data.
+
+
+For the prior hyperparameters on the transition probability matrices we choose the identity matrix.
+This corresponds to assuming that there is one subject that has made the transition from each of the states to the same state, and that there are no subjects that changed state.
+Each early state vector carries a total weight of 1 subject, so this can be considered a weakly-informative prior.
+```{r set_priors_long}
+# Priors for the longitudinal model
+long_prior = list(
+  beta = rep(1, K), # priors for p30 
+  alpha = diag(rep(1, K)) # priors for p90 | p30 and p180|p90 
+)
+```
+
+
+We can visualize the priors with a heatmap of the possible transitions:
+```{r plt_priors_long, fig.height = 5, fig.width = 10}
+plt_prior = plot_Ptrans(list(p30 = long_prior$beta,
+                             p90 = long_prior$alpha,
+                             p180 = long_prior$alpha))
+```
+
+
+We can then run the `fit_model()` function and extract the predicted probabilities of success. 
+```{r pred_probs}
+fit_pp = fit_model(df = data, long_prior = long_prior, n_max = 500,
+                   key_trt = key_trt, iters = 1000, seed = model_seed)
+
+cat("The probability of success at the current sample size is", round(mean(fit_pp$PPn), 2), "\n")
+cat("The probability of success at the maxiumum sample size is", round(mean(fit_pp$PPmax), 2), "\n")
+```
+
+
+The threshold to declare early success is generally based on $PP_{n}$ and is chosen in the design phase to control the overall type I error. 
+The threshold to declare futility is generally based on $PP_{max}$ and is chosen in the design phase to minimize the exposure of patient to non-promising therapies.
+
+
+In this case, we can see that the predictive probabilities of success if we stop now and if we continue to the maximum sample size are really high, despite the fact that the current p-value is not significant. 
+This is due to the fact that the accruing information is expected to confirm the current positive results, reducing the uncertainty around the model estimates and yielding a significant p-value.
+
+
+# Conclusions
+
+
+We discussed here the potential use of ordinal regression when dealing with ordinal outcomes. 
+An alternative approach involves weighting the ordinal outcomes by means of a utility function that reflects the clinical meaning of the response values, and using a model for continuous responses. 
+
+
+# Original Computing Environment {-}
+
+
+```{r comp_environment}
+writeLines(readLines(file.path(Sys.getenv("HOME"), ".R/Makevars")))
+```
+
+
+```{r sessionInfo}
+sessionInfo()
+```
