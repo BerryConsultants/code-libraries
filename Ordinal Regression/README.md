@@ -1,6 +1,6 @@
 # Ordinal Regression with Markov Longitudinal Model
 
-This [R walkthrough](https://BerryConsultants.github.io/code-libraries/Ordinal%20Regression/ordinal_regression.html) guides through data generation, prior calibration and posterior simulation for an ordinal regression model with a Markov longitudinal model to impute the final endpoints using prior visit values.
+This [R walkthrough](https://berryconsultants.github.io/code-libraries/Ordinal%20Regression/ordinal_regression.html) guides through data generation, prior calibration and posterior simulation for an ordinal regression model with a Markov longitudinal model to impute the final endpoints using prior visit values.
 
 Highlights from this walkthrough include: 
 

@@ -12,7 +12,7 @@ The main topics covered involve:
 * Group Sequential Design
 * Interactive Data Visualization
 
-To visualize this repository as a website, click [here](https://BerryConsultants.github.io/code-libraries/).
+To visualize this repository as a website, click [here](https://berryconsultants.github.io/code-libraries/).
 
 ### Questions or bugs
 

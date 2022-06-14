@@ -1,6 +1,6 @@
 # Time to Event Model with Smooth Dose-Response Curve
 
-This [R walkthrough](https://BerryConsultants.github.io/code-libraries/Time%20to%20Event/TTE_smooth.html) guides through data generation, prior calibration and posterior simulation for a piecewise exponential model with a NDLM for the underlying dose-response curve.
+This [R walkthrough](https://berryconsultants.github.io/code-libraries/Time%20to%20Event/TTE_smooth.html) guides through data generation, prior calibration and posterior simulation for a piecewise exponential model with a NDLM for the underlying dose-response curve.
 
 Highlights from this walkthrough include: 
 
