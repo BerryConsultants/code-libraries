@@ -328,6 +328,86 @@ p_trt_est %>%
 
 
 
+# Model Diagnostics -------------------------------------------------------
+
+
+# Fit the frequentist model
+data_fit = data %>% 
+  mutate(RESP180 = factor(RESP180))
+
+fit_freq = MASS::polr(RESP180 ~ TRTPN, data = data_fit, Hess = TRUE)
+fit_summ = summary(fit_freq)
+
+obs_OR = exp(- fit_summ$coefficients[1,"Value"])
+LI_OR = exp(- fit_summ$coefficients[1,"Value"] - 1.96 * fit_summ$coefficients[1,"Std. Error"])
+UI_OR = exp(- fit_summ$coefficients[1,"Value"] + 1.96 * fit_summ$coefficients[1,"Std. Error"])
+
+binned_OR = tibble('method' = 'Overall PO', 
+                   'mean' = obs_OR, 
+                   'li' = LI_OR, 
+                   'ui' = UI_OR)
+
+# Fit the dichotomized logistic regressions
+for (i in 0:(K-2)){
+  data_binn = data %>% 
+    mutate(RESP180 = factor(if_else(RESP180 <= i, 0, 1)))
+  fit_binn = glm(RESP180 ~ TRTPN, data = data_binn, family = "binomial")
+  fit_summ_binn = summary(fit_binn)
+  
+  obs_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"])
+  LI_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"] - 1.96 * fit_summ_binn$coefficients[2,"Std. Error"])
+  UI_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"] + 1.96 * fit_summ_binn$coefficients[2,"Std. Error"])
+  
+  binned_OR = binned_OR %>% 
+    add_row('method' = paste0('Response >= ', i + 1, ' vs others'), 
+            'mean' = obs_OR, 
+            'li' = LI_OR, 
+            'ui' = UI_OR)
+}
+
+
+# Overall odds ratio estimate from the PO model and individual dichotomized
+# odds ratio estimates
+binned_OR %>% 
+  mutate(method = factor(method, levels = c(sprintf('Response >= %s vs others', (K-1):1), 'Overall PO'))) %>% 
+  ggplot() + 
+  geom_rect(aes(ymin = as.numeric(binned_OR[1,'li']), ymax = as.numeric(binned_OR[1,'ui']), xmin = -Inf, xmax = +Inf), alpha = 0.05) +
+  geom_linerange(aes(ymin = li, ymax = ui, x = method), lwd = 1) + 
+  geom_point(aes(x = method, y = mean, col = "Estimated OR"), size = 3) +
+  geom_hline(yintercept = 1, lty = 5) +
+  geom_hline(yintercept = as.numeric(binned_OR[1,'mean']), lty = 3) +
+  coord_flip() +
+  scale_color_manual(name = '', values = brewer.pal(8, 'Dark2')[2]) +
+  scale_x_discrete(name = '') + 
+  scale_y_continuous(name = "Odds Ratio (log scale)", trans='log2') +
+  theme(legend.position = 'none')
+
+
+# Log-odds (logit transformed cumulative probabilities).
+# The model assumes a constant vertical shift between the two groups
+data_fit %>% 
+  group_by(TRTPN, RESP180) %>% 
+  summarize(n = n()) %>% 
+  complete(RESP180) %>% 
+  mutate(n = if_else(is.na(n), as.integer(0), n)) %>% 
+  filter(!is.na(RESP180)) %>% 
+  mutate(emp_p = n / sum(n), 
+         cumul_emp_p = cumsum(emp_p)) %>% 
+  ungroup() %>% 
+  mutate(cumul_fitted_p = c(as.numeric(inv_logit(fit_summ$coefficients[-1,'Value'])), 
+                            1, 
+                            inv_logit(- fit_summ$coefficients[1,'Value'] + as.numeric(fit_summ$coefficients[-1,'Value'])), 
+                            1)) %>% 
+  ggplot() + 
+  geom_step(aes(x = as.numeric(RESP180), y = logit(cumul_emp_p), col = TRTPN), size = 1) +
+  geom_step(aes(x = as.numeric(RESP180), y = logit(cumul_fitted_p), col = TRTPN), lty = 2, size = 1) + 
+  scale_x_continuous(name = 'Response at 180 days', breaks = 0:(K-1), labels = levels(data_fit$RESP180)) + 
+  scale_y_continuous(name = 'logit(cumulative probabilities) \n [log-odds]') + 
+  scale_color_brewer(name = '', palette = 'Dark2') + 
+  theme(legend.position = 'top')
+
+
+
 # Calculate predictive probabilities --------------------------------------
 
 fit_pp = fit_model(df = data, long_prior = long_prior, n_max = 500, 

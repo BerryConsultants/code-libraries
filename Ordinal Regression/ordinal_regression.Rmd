@@ -721,6 +721,106 @@ p_trt_est %>%
 The black lines represent the underlying truth, the colored lines and shaded areas are the mean and $95\%$ credible interval from the Bayesian model.
 
 
+# Model Diagnostics
+
+
+We propose here two graphic diagnostics to check the proportional odds assumption of the model. 
+The first one involves fitting repeated logistic regressions to all possible dichotomizations of the ordinal categories and verify that the odds ratios are similar to each other. 
+
+
+```{r check_assuptions, out.width = "100%"}
+# Fit the frequentist PO model
+data_fit = data %>% 
+  mutate(RESP180 = factor(RESP180))
+
+fit_freq = MASS::polr(RESP180 ~ TRTPN, data = data_fit, Hess = TRUE)
+fit_summ = summary(fit_freq)
+
+obs_OR = exp(- fit_summ$coefficients[1,"Value"])
+LI_OR = exp(- fit_summ$coefficients[1,"Value"] - 1.96 * fit_summ$coefficients[1,"Std. Error"])
+UI_OR = exp(- fit_summ$coefficients[1,"Value"] + 1.96 * fit_summ$coefficients[1,"Std. Error"])
+
+binned_OR = tibble('method' = 'Overall PO', 
+                   'mean' = obs_OR, 
+                   'li' = LI_OR, 
+                   'ui' = UI_OR)
+
+# Fit the dichotomized logistic regressions
+for (i in 0:(K-2)){
+  data_binn = data %>% 
+    mutate(RESP180 = factor(if_else(RESP180 <= i, 0, 1)))
+  fit_binn = glm(RESP180 ~ TRTPN, data = data_binn, family = "binomial")
+  fit_summ_binn = summary(fit_binn)
+  
+  obs_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"])
+  LI_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"] - 1.96 * fit_summ_binn$coefficients[2,"Std. Error"])
+  UI_OR = exp(- fit_summ_binn$coefficients[2,"Estimate"] + 1.96 * fit_summ_binn$coefficients[2,"Std. Error"])
+  
+  binned_OR = binned_OR %>% 
+    add_row('method' = paste0('Response >= ', i + 1, ' vs others'), 
+            'mean' = obs_OR, 
+            'li' = LI_OR, 
+            'ui' = UI_OR)
+}
+
+
+# Overall odds ratio estimate from the PO model and individual
+# dichotomized odds ratio estimates
+binned_OR %>% 
+  mutate(method = factor(method, levels = c(sprintf('Response >= %s vs others', (K-1):1), 'Overall PO'))) %>% 
+  ggplot() + 
+  geom_rect(aes(ymin = as.numeric(binned_OR[1,'li']), ymax = as.numeric(binned_OR[1,'ui']), xmin = -Inf, xmax = +Inf), alpha = 0.05) +
+  geom_linerange(aes(ymin = li, ymax = ui, x = method), lwd = 1) + 
+  geom_point(aes(x = method, y = mean, col = "Estimated OR"), size = 3) +
+  geom_hline(yintercept = 1, lty = 5) +
+  geom_hline(yintercept = as.numeric(binned_OR[1,'mean']), lty = 3) +
+  coord_flip() +
+  scale_color_manual(name = '', values = brewer.pal(8, 'Dark2')[2]) +
+  scale_x_discrete(name = '') + 
+  scale_y_continuous(name = "Odds Ratio (log scale)", trans='log2') +
+  theme(legend.position = 'none')
+```
+
+We can see here that the odds ratio are all similar to each other (e.g., within each other's confidence intervals).
+Using the binary logistic models, moreover, we can see that small effects of the treatment are observed for each possible dichotomization of the ordinal outcome.
+However, these effects are usually not significant.
+Performing ordinal logistic regression, we can produce a common odds ratio, which has a narrower confidence interval.
+Thus, in this case this method has greater power to detect a significant effect. 
+
+
+We can also inspect the log-odds (logit transformed cumulative probabilities) and verify that they differ by a constant across the two treatment groups. 
+The proportional odds model (dashed line), in fact, assumes that there is a **constant** vertical shift between the log-odds. 
+
+
+```{r check_assumptions_2, out.width = "100%"}
+# Log-odds (logit transformed cumulative probabilities).
+# The model assumes a constant vertical shift between the two groups
+data_fit %>% 
+  group_by(TRTPN, RESP180) %>% 
+  summarize(n = n()) %>% 
+  complete(RESP180) %>% 
+  mutate(n = if_else(is.na(n), as.integer(0), n)) %>% 
+  filter(!is.na(RESP180)) %>% 
+  mutate(emp_p = n / sum(n), 
+         cumul_emp_p = cumsum(emp_p)) %>% 
+  ungroup() %>% 
+  mutate(cumul_fitted_p = c(as.numeric(inv_logit(fit_summ$coefficients[-1,'Value'])), 
+                            1, 
+                            inv_logit(- fit_summ$coefficients[1,'Value'] + as.numeric(fit_summ$coefficients[-1,'Value'])), 
+                            1)) %>% 
+  ggplot() + 
+  geom_step(aes(x = as.numeric(RESP180), y = logit(cumul_emp_p), col = TRTPN), size = 1) +
+  geom_step(aes(x = as.numeric(RESP180), y = logit(cumul_fitted_p), col = TRTPN), lty = 2, size = 1) + 
+  scale_x_continuous(name = 'Response at 180 days', breaks = 0:(K-1), labels = levels(data_fit$RESP180)) + 
+  scale_y_continuous(name = 'logit(cumulative probabilities) \n [log-odds]') + 
+  scale_color_brewer(name = '', palette = 'Dark2') + 
+  theme(legend.position = 'top')
+```
+
+
+As we can see in this graph (and as we knew, since we generated the data), the proportional odds assumption is verified in the empirical data (solid lines). 
+
+
 # Predictive Probabilities {#sec-pred}
 
 
@@ -798,6 +898,58 @@ The threshold to declare futility is generally based on $PP_{max}$ and is chosen
 
 In this case, we can see that the predictive probabilities of success if we stop now and if we continue to the maximum sample size are really high, despite the fact that the current p-value is not significant. 
 This is due to the fact that the accruing information is expected to confirm the current positive results, reducing the uncertainty around the model estimates and yielding a significant p-value.
+
+
+# Bonus: Sparsity Inducing Prior for the Cutpoints
+
+
+When the ordinal response categories are sparse (i.e., no observations are available for some categories), the model used is not likelihood identifiable. 
+This is very common when the number of categories is large.
+In such scenario, using a uniform improper prior for the latent cutpoints would yield poor mixing and model degeneracies. 
+Ideally, we would like to use domain expertise to inform a prior for the internal cutpoints. 
+However, defining a prior on the abstract latent space where the internal cutpoints are defined can be difficult. 
+
+
+Say that we want to use a Dirichlet prior directly on the ordinal class probabilities.
+In order to construct the induced prior density function on the internal cutpoints we need to be careful about the Jacobian determinant of the transformation. 
+In particular, the transformation from cutpoints to probabilities is 
+$$
+\begin{aligned}
+&p_{1} = 1 - \Pi(-c_{1})
+\\
+&p_{2} = \Pi(-c_{1}) - \Pi(-c_{2})
+\\
+&\vdots
+\\
+&p_{K - 1} = \Pi(-c_{K - 2}) - \Pi(-c_{K - 1})
+\\
+&p_{K} = \Pi(-c_{K-1})
+\end{aligned}
+$$
+with the constraint $S = \sum_{k=1}^{K} p_{k} = 1$. 
+The Jacobian corresponding to this transformation is 
+$$
+J = 
+\left(
+\begin{array}{ccccc}
+1 & \pi(-c_{1}) &  & & \\ 
+1 & -\pi(-c_{1}) & \pi(-c_{2}) & & \\ 
+\vdots &  & \ddots & \ddots & \\ 
+1 &  &  & -\pi(-c_{k-2}) & \pi(-c_{k-1}) \\
+1 &  &  &  & -\pi(-c_{k-1})
+\end{array} 
+\right)
+$$
+
+
+Thus, the probability distribution on the cutpoints implied by the Dirichlet distribution on the probabilities is 
+$$p(c_{1}, \dots, c_{K-1}) = p(p_{1}, \dots, p_{K} \mid \alpha) |J|.$$
+
+
+The STAN model corresponding to this new prior is the following:
+```{r print_model_dir}
+writeLines(readLines("./ord_logistic_dirichlet.stan"))
+```
 
 
 # Conclusions

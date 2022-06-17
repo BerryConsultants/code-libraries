@@ -13,7 +13,8 @@ parameters {
 
 model {
   // Prior model
-  // Implicit uniform priors
+  theta ~ normal(0, 2); // prior on the OR parameter 
+  // Implicit uniform priors on the cutpoints
   
   // Observational model
   for (i in 1:N) {
