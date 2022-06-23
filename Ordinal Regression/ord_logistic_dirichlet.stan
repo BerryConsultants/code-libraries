@@ -1,26 +1,28 @@
 functions {
   real induced_dirichlet_lpdf(vector c, vector alpha) {
     int D = num_elements(c) + 1;
-    vector[D - 1] sigma = inv_logit(- c);
     vector[D] p;
     matrix[D, D] J = rep_matrix(0, D, D);
+
+    // Initialize the inv_logit transformed cutpoints
+    vector[D - 1] Pi = inv_logit(- c);
     
     // Induced ordinal probabilities
-    p[1] = 1 - sigma[1];
+    p[1] = 1 - Pi[1];
     for (k in 2:(D - 1)) {
-      p[k] = sigma[k - 1] - sigma[k];
+      p[k] = Pi[k - 1] - Pi[k];
     }
-    p[D] = sigma[D - 1];
+    p[D] = Pi[D - 1];
     
-    // Baseline column of Jacobian
+    // First column of Jacobian
     for (k in 1:D) {
       J[k, 1] = 1;
     }
     
-    // Diagonal entries of Jacobian
+    // Nonzero entries of Jacobian
     for (k in 2:D) {
-      J[k, k] = - sigma[k - 1] * (1 - sigma[k - 1]);
-      J[k - 1, k] = sigma[k - 1] * (1 - sigma[k - 1]);
+      J[k, k] = - Pi[k - 1] * (1 - Pi[k - 1]);
+      J[k - 1, k] = Pi[k - 1] * (1 - Pi[k - 1]);
     }
     
     return (dirichlet_lpdf(p | alpha) + log_determinant(J));
