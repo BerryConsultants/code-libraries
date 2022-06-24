@@ -10,4 +10,4 @@ The main topics covered involve:
 * Models for Count Data
 * Semiparametric Regression
 * Group Sequential Design
-* Interactive Data Visualization
+* [Interactive Data Visualization](./Interactive%20Plots)
